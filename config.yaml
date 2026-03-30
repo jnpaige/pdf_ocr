@@ -1,0 +1,11 @@
+# Input — path to a single PDF or a directory of PDFs
+pdf_input: 'C:\Users\jpaige\Desktop\Local_repositories\OCR_tasks\GLO_map_example'
+
+# Output directory — a subfolder named <pdf_stem>_<dpi>dpi_surya will be created here
+output_dir: 'C:\Users\jpaige\Desktop\Local_repositories\OCR_tasks\GLO_map_example_Surja'
+
+# Rendering
+page_image_dpi: 20
+
+# OCR
+ocr_languages: ['en']

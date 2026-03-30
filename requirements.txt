@@ -1,0 +1,9 @@
+# Core dependencies
+pymupdf
+pillow
+pyyaml
+surya-ocr
+transformers>=4.56.1,<5.0.0
+
+# Install CUDA build manually — CPU build will NOT work:
+# pip install torch --index-url https://download.pytorch.org/whl/cu128
