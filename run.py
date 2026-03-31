@@ -1,19 +1,20 @@
 """
 run.py — PDF to OCR pipeline
-Renders a PDF to page images at a specified DPI, then OCRs each page with Surya.
+Renders a PDF to page images at a specified DPI, then OCRs each page with
+one or more engines (surya, kraken) as configured in config.yaml.
 
 Usage:
     python run.py
     python run.py --config path/to/config.yaml
 
-Output folder: <output_dir>/<pdf_stem>_<dpi>dpi_surya/
-  page_000.png, page_001.png, ...   rendered page images
-  ocr.json                          structured OCR results (text, bboxes, confidence)
-  text.txt                          plain concatenated text, one page per section
+Output folder: <output_dir>/<pdf_stem>_<dpi>dpi_<engines>/
+  page_000.png, page_001.png, ...       rendered page images
+  ocr_<engine>.json                     structured results per engine
+  text_<engine>.txt                     plain text per engine
+  <pdf_stem>_ocr_<engine>.pdf           searchable PDF per engine
 
-Edit config.yaml to change the input PDF, DPI, or output location.
+Edit config.yaml to change the input PDF, DPI, output location, or engines.
 """
-
 
 import argparse
 import json
@@ -25,7 +26,6 @@ import yaml
 sys.path.insert(0, str(Path(__file__).parent / "lib"))
 
 from render import render_pdf
-from ocr_surya import run_ocr
 from pdf_writer import build_searchable_pdf
 
 
@@ -43,31 +43,38 @@ def collect_pdfs(pdf_input: str) -> list[Path]:
     raise ValueError(f"pdf_input must be a .pdf file or a directory: {pdf_input}")
 
 
-def output_folder_name(pdf_path: Path, dpi: int, ocr_method: str = "surya") -> str:
-    return f"{pdf_path.stem}_{dpi}dpi_{ocr_method}"
+def output_folder_name(pdf_path: Path, dpi: int, engines: list[str]) -> str:
+    return f"{pdf_path.stem}_{dpi}dpi_{'_'.join(engines)}"
 
 
-def save_outputs(out_dir: Path, ocr_results: list[dict], image_paths: list[Path], dpi: int, pdf_stem: str):
-    ocr_path = out_dir / "ocr.json"
+def save_engine_outputs(
+    out_dir: Path,
+    engine: str,
+    ocr_results: list[dict],
+    image_paths: list[Path],
+    dpi: int,
+    pdf_stem: str,
+):
+    ocr_path = out_dir / f"ocr_{engine}.json"
     ocr_path.write_text(json.dumps(ocr_results, indent=2, ensure_ascii=False), encoding="utf-8")
 
-    text_path = out_dir / "text.txt"
-    sections = []
-    for r in ocr_results:
-        sections.append(f"=== Page {r['page_index']} ===\n{r['full_text']}")
+    text_path = out_dir / f"text_{engine}.txt"
+    sections = [f"=== Page {r['page_index']} ===\n{r['full_text']}" for r in ocr_results]
     text_path.write_text("\n\n".join(sections), encoding="utf-8")
 
-    pdf_path = build_searchable_pdf(image_paths, ocr_results, out_dir / f"{pdf_stem}_ocr.pdf", dpi)
+    pdf_out = build_searchable_pdf(
+        image_paths, ocr_results, out_dir / f"{pdf_stem}_ocr_{engine}.pdf", dpi
+    )
 
-    print(f"  Saved: {ocr_path.name}, {text_path.name}, {pdf_path.name}")
+    print(f"    Saved: {ocr_path.name}, {text_path.name}, {pdf_out.name}")
 
 
 def process_pdf(pdf_path: Path, cfg: dict):
-    dpi        = int(cfg.get("page_image_dpi", 70))
+    dpi        = int(cfg.get("page_image_dpi", 150))
     output_dir = Path(cfg["output_dir"])
-    languages  = cfg.get("ocr_languages", ["en"])
+    engines    = cfg.get("ocr_engines", ["surya"])
 
-    out_dir = output_dir / output_folder_name(pdf_path, dpi)
+    out_dir = output_dir / output_folder_name(pdf_path, dpi, engines)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"\n[{pdf_path.name}]")
@@ -75,9 +82,21 @@ def process_pdf(pdf_path: Path, cfg: dict):
     image_paths = render_pdf(pdf_path, out_dir, dpi)
     print(f"  Rendered {len(image_paths)} page(s)")
 
-    ocr_results = run_ocr(image_paths, languages)
-    save_outputs(out_dir, ocr_results, image_paths, dpi, pdf_path.stem)  # pdf_path.stem = original PDF filename
-    print(f"  Done → {out_dir}")
+    for engine in engines:
+        print(f"\n  [{engine.upper()}]")
+
+        if engine == "surya":
+            from ocr_surya import run_ocr as surya_ocr
+            languages = cfg.get("ocr_languages", ["en"])
+            results = surya_ocr(image_paths, languages)
+
+        else:
+            print(f"  Unknown engine '{engine}', skipping.")
+            continue
+
+        save_engine_outputs(out_dir, engine, results, image_paths, dpi, pdf_path.stem)
+
+    print(f"\n  Done → {out_dir}")
 
 
 def main():

@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(.venv/Scripts/python -c \"import torch; print\\(torch.__version__\\); print\\(''CUDA:'', torch.cuda.is_available\\(\\)\\)\")",
+      "Read(//c/Users/jpaige/Desktop/**)",
+      "Read(//c/Users/jpaige/Desktop/Research_repositories/**)"
+    ]
+  }
+}
