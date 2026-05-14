@@ -1,19 +1,18 @@
 """
-run.py — PDF to OCR pipeline
-Renders a PDF to page images at a specified DPI, then OCRs each page with
-one or more engines (surya, kraken) as configured in config.yaml.
+run.py — PDF to Markdown pipeline (Docling + Surya OCR)
+
+Processes a single PDF or a directory of PDFs. Each PDF is passed through the
+Docling pipeline with Surya as the OCR backend, producing a Markdown file per
+PDF suitable for RAG indexing or LLM agent ingestion.
 
 Usage:
     python run.py
     python run.py --config path/to/config.yaml
 
-Output folder: <output_dir>/<pdf_stem>_<dpi>dpi_<engines>/
-  page_000.png, page_001.png, ...       rendered page images
-  ocr_<engine>.json                     structured results per engine
-  text_<engine>.txt                     plain text per engine
-  <pdf_stem>_ocr_<engine>.pdf           searchable PDF per engine
-
-Edit config.yaml to change the input PDF, DPI, output location, or engines.
+Output per PDF:  <output_dir>/<pdf_stem>/
+    <pdf_stem>.md        Markdown with layout, tables, and reading order preserved
+    ocr_docling.json     Structured per-page results
+    text_docling.txt     Plain text (one section per page)
 """
 
 import argparse
@@ -24,9 +23,6 @@ from pathlib import Path
 import yaml
 
 sys.path.insert(0, str(Path(__file__).parent / "lib"))
-
-from render import render_pdf
-from pdf_writer import build_searchable_pdf
 
 
 def load_config(config_path: Path) -> dict:
@@ -43,73 +39,24 @@ def collect_pdfs(pdf_input: str) -> list[Path]:
     raise ValueError(f"pdf_input must be a .pdf file or a directory: {pdf_input}")
 
 
-def output_folder_name(pdf_path: Path, dpi: int, engines: list[str]) -> str:
-    return f"{pdf_path.stem}_{dpi}dpi_{'_'.join(engines)}"
-
-
-def save_engine_outputs(
-    out_dir: Path,
-    engine: str,
-    ocr_results: list[dict],
-    image_paths: list[Path],
-    dpi: int,
-    pdf_stem: str,
-):
-    ocr_path = out_dir / f"ocr_{engine}.json"
-    ocr_path.write_text(json.dumps(ocr_results, indent=2, ensure_ascii=False), encoding="utf-8")
-
-    text_path = out_dir / f"text_{engine}.txt"
-    sections = [f"=== Page {r['page_index']} ===\n{r['full_text']}" for r in ocr_results]
-    text_path.write_text("\n\n".join(sections), encoding="utf-8")
-
-    pdf_out = build_searchable_pdf(
-        image_paths, ocr_results, out_dir / f"{pdf_stem}_ocr_{engine}.pdf", dpi
-    )
-
-    print(f"    Saved: {ocr_path.name}, {text_path.name}, {pdf_out.name}")
-
-
 def process_pdf(pdf_path: Path, cfg: dict):
-    dpi        = int(cfg.get("page_image_dpi", 150))
-    output_dir = Path(cfg["output_dir"])
-    engines    = cfg.get("ocr_engines", ["surya"])
-
-    out_dir = output_dir / output_folder_name(pdf_path, dpi, engines)
+    out_dir = Path(cfg["output_dir"]) / pdf_path.stem
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"\n[{pdf_path.name}]")
-    print(f"  Rendering at {dpi} DPI → {out_dir}")
-    image_paths = render_pdf(pdf_path, out_dir, dpi)
-    print(f"  Rendered {len(image_paths)} page(s)")
+    print(f"\n[{pdf_path.name}]  →  {out_dir}")
 
-    for engine in engines:
-        print(f"\n  [{engine.upper()}]")
+    from ocr_docling import run_ocr
+    results = run_ocr(pdf_path, out_dir, docling_cfg=cfg.get("docling", {}))
 
-        if engine == "surya":
-            from ocr_surya import run_ocr as surya_ocr
-            languages  = cfg.get("ocr_languages", ["en"])
-            surya_cfg  = cfg.get("surya", {})
-            results    = surya_ocr(image_paths, languages, surya_cfg=surya_cfg)
+    ocr_path = out_dir / "ocr_docling.json"
+    ocr_path.write_text(json.dumps(results, indent=2, ensure_ascii=False), encoding="utf-8")
 
-        elif engine == "mineru":
-            from ocr_mineru import run_ocr as mineru_ocr
-            languages   = cfg.get("ocr_languages", ["en"])
-            mineru_cfg  = cfg.get("mineru", {})
-            mineru_work = out_dir / "mineru_work"
-            results     = mineru_ocr(pdf_path, dpi, mineru_work, languages,
-                                     mineru_cfg=mineru_cfg)
-            # Stitch rendered image paths into results (MinerU doesn't know about them)
-            for i, r in enumerate(results):
-                if i < len(image_paths):
-                    r["image_path"] = str(image_paths[i])
+    text_path = out_dir / "text_docling.txt"
+    sections = [f"=== Page {r['page_index']} ===\n{r['full_text']}" for r in results]
+    text_path.write_text("\n\n".join(sections), encoding="utf-8")
 
-        else:
-            print(f"  Unknown engine '{engine}', skipping.")
-            continue
-
-        save_engine_outputs(out_dir, engine, results, image_paths, dpi, pdf_path.stem)
-
-    print(f"\n  Done → {out_dir}")
+    print(f"  Saved: {ocr_path.name}, {text_path.name}")
+    print(f"  Done → {out_dir}")
 
 
 def main():

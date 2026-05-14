@@ -1,16 +1,14 @@
 # Input — path to a single PDF or a directory of PDFs
-pdf_input: 'C:\Users\jpaige\Desktop\Local_repositories\OCR_tasks\GLO_map_example'
+pdf_input: 'C:\Users\jpaige\Desktop\Local_repositories\OCR_tasks\Di_peso_subset'
 
-# Output directory — subfolders per PDF will be created here
-output_dir: 'C:\Users\jpaige\Desktop\Local_repositories\OCR_tasks\GLO_map_example_Surja'
+# Output directory — a subfolder per PDF is created here automatically
+output_dir: 'C:\Users\jpaige\Desktop\Local_repositories\OCR_tasks\Di_peso_Surja_subset_OCR'
 
-# Rendering
-page_image_dpi: 150
-
-# OCR engines to run
-# surya:  strong on structured/tabular text, horizontal layouts
-ocr_engines: ['surja']
-
-# Surya settings
-ocr_languages: ['en']
-
+# Docling + Surya pipeline configuration
+#
+# markdown_dir (optional):
+#   All .md files are also written here as a flat directory — useful for
+#   pointing a vector store or RAG indexer at a single location.
+#
+docling:
+  markdown_dir: 'C:\Users\jpaige\Desktop\Local_repositories\OCR_tasks\Di_peso_Surja_subset_OCR_docling'

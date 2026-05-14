@@ -1,89 +1,14 @@
 # Input — path to a single PDF or a directory of PDFs
-pdf_input: 'C:\Users\jpaige\Desktop\Local_repositories\OCR_tasks\Di_peso_subset'
+pdf_input: 'C:\Users\jpaige\Desktop\Local_repositories\LLM_coding_pdf_test_sets\2024_forms_large_files'
 
-# Output directory — subfolders per PDF will be created here
-output_dir: 'C:\Users\jpaige\Desktop\Local_repositories\OCR_tasks\Di_peso_Surja_subset_OCR'
+# Output directory — a subfolder per PDF is created here automatically
+output_dir: 'C:\Users\jpaige\Desktop\Local_repositories\LLM_coding_pdf_test_sets\2024_forms_large_files_surya_docling'
 
-# Rendering
-page_image_dpi: 150
-
-# Page selection — set by select_pages.py, or edit manually.
-# List of 1-based page numbers to OCR. Omit (or remove) to process all pages.
-# pages: [1, 2, 3]
-
-# OCR engines to run — one or both of: surya, mineru
-# surya   — Surya OCR (layout_rec pipeline recommended for multi-column)
-# mineru  — MinerU / PaddleOCR; requires: pip install 'magic-pdf[full]'
-#            plus model weights download (see https://github.com/opendatalab/MinerU)
-# ocr_engines: ['surya']
-ocr_engines: ['mineru']
-
-# Surya settings
-ocr_languages: ['en']
-
-# --- Surya pipeline configuration -------------------------------------------
+# Docling + Surya pipeline configuration
 #
-# Three pipeline modes are available.  Uncomment ONE pipeline value below.
+# markdown_dir (optional):
+#   All .md files are also written here as a flat directory — useful for
+#   pointing a vector store or RAG indexer at a single location.
 #
-#   recognition  — (default) Detection + Recognition only.  Fastest, but no
-#                  column/layout awareness.  Text from adjacent columns or
-#                  figures may merge on complex pages.
-#
-#   ocr          — High-level OCRPredictor.  Internally runs Layout analysis
-#                  first, identifying columns, figures, and tables as separate
-#                  regions, then OCRs each region independently.  Best first
-#                  thing to try for multi-column documents like Di Peso.
-#                  Moderate speed increase over layout_rec.
-#
-#   layout_rec   — Explicit Layout → per-region Recognition.  Same column
-#                  separation as 'ocr' but gives you full control: the JSON
-#                  output includes layout region metadata (labels, bboxes,
-#                  confidences), and you can restrict which region types get
-#                  OCR'd via layout_region_types below.  Slightly slower
-#                  because each region is OCR'd as a separate batch call.
-#
-surya:
-  # pipeline: 'recognition'
-  # pipeline: 'ocr'
-  pipeline: 'layout_rec'
-
-  # layout_region_types  (layout_rec pipeline only)
-  # ---------------------------------------------------------------------------
-  # Which detected layout regions to send through OCR.  Regions whose labels
-  # are NOT in this list are skipped (their bboxes still appear in the JSON
-  # under layout_regions, just without extracted text).
-  #
-  # Surya's layout model can produce these labels (model-version dependent):
-  #   Text, SectionHeader, Title, Caption, Footnote, Formula, ListItem,
-  #   PageHeader, PageFooter, Table, Picture, Figure
-  #
-  # The defaults below cover all text-bearing region types.  To skip headers
-  # and footers (e.g. running page numbers that clutter your output),
-  # remove PageHeader / PageFooter from the list.
-  #
-  # layout_region_types:
-  #   - Text
-  #   - SectionHeader
-  #   - Title
-  #   - Caption
-  #   - Footnote
-  #   - Formula
-  #   - ListItem
-  #   - PageHeader
-  #   - PageFooter
-  #   - Table
-  #   - Figure
-  #   - Picture
-  # All of the above are OCR'd by default. Remove any type to skip it
-  # (e.g. remove PageHeader/PageFooter to drop running page numbers).
-
-# --- MinerU configuration ---------------------------------------------------
-#
-# Used when 'mineru' is in ocr_engines.
-# MinerU takes the PDF directly and runs its own layout detection + PaddleOCR.
-# Results are translated to pixel coordinates matching the rendered page images.
-#
-# mineru:
-#   method: 'ocr'   # 'ocr'  — force PaddleOCR (use for scanned PDFs)
-#                   # 'auto' — MinerU decides based on PDF type
-#                   # 'txt'  — extract embedded text only (born-digital PDFs)
+docling:
+  markdown_dir:  'C:\Users\jpaige\Desktop\Local_repositories\LLM_coding_pdf_test_sets\2024_forms_large_files_surya_docling'
