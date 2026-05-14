@@ -87,8 +87,21 @@ def process_pdf(pdf_path: Path, cfg: dict):
 
         if engine == "surya":
             from ocr_surya import run_ocr as surya_ocr
-            languages = cfg.get("ocr_languages", ["en"])
-            results = surya_ocr(image_paths, languages)
+            languages  = cfg.get("ocr_languages", ["en"])
+            surya_cfg  = cfg.get("surya", {})
+            results    = surya_ocr(image_paths, languages, surya_cfg=surya_cfg)
+
+        elif engine == "mineru":
+            from ocr_mineru import run_ocr as mineru_ocr
+            languages   = cfg.get("ocr_languages", ["en"])
+            mineru_cfg  = cfg.get("mineru", {})
+            mineru_work = out_dir / "mineru_work"
+            results     = mineru_ocr(pdf_path, dpi, mineru_work, languages,
+                                     mineru_cfg=mineru_cfg)
+            # Stitch rendered image paths into results (MinerU doesn't know about them)
+            for i, r in enumerate(results):
+                if i < len(image_paths):
+                    r["image_path"] = str(image_paths[i])
 
         else:
             print(f"  Unknown engine '{engine}', skipping.")

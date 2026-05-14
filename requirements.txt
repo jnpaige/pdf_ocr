@@ -7,3 +7,9 @@ transformers>=4.56.1,<5.0.0
 
 # Install CUDA build manually after the above — pip will pull a CPU torch by default:
 # pip install torch --index-url https://download.pytorch.org/whl/cu128
+
+# Optional — MinerU / PaddleOCR engine (ocr_engines: ['mineru'] in config.yaml)
+# pip install "magic-pdf[full]"
+# After install, download model weights:
+#   magic-pdf --help   # triggers first-run model download prompt
+# Or follow: https://github.com/opendatalab/MinerU#quick-start

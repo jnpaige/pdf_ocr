@@ -1,0 +1,16 @@
+# Input — path to a single PDF or a directory of PDFs
+pdf_input: 'C:\Users\jpaige\Desktop\Local_repositories\OCR_tasks\GLO_map_example'
+
+# Output directory — subfolders per PDF will be created here
+output_dir: 'C:\Users\jpaige\Desktop\Local_repositories\OCR_tasks\GLO_map_example_Surja'
+
+# Rendering
+page_image_dpi: 150
+
+# OCR engines to run
+# surya:  strong on structured/tabular text, horizontal layouts
+ocr_engines: ['surja']
+
+# Surya settings
+ocr_languages: ['en']
+
