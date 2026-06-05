@@ -1,8 +1,8 @@
 # Input — path to a single PDF or a directory of PDFs
-pdf_input: 'C:\Users\jpaige\Desktop\Local_repositories\LLM_coding_pdf_test_sets\2024_forms_large_files'
+pdf_input: 'D:\Local_repository\2024_forms_chunked\Chunk_2'
 
 # Output directory — a subfolder per PDF is created here automatically
-output_dir: 'C:\Users\jpaige\Desktop\Local_repositories\LLM_coding_pdf_test_sets\2024_forms_large_files_surya_docling'
+output_dir: 'D:\Local_repository\2024_forms_chunked\2024_forms_chunk_2_surya_docling_6_5_2026'
 
 # Docling + Surya pipeline configuration
 #
@@ -11,4 +11,4 @@ output_dir: 'C:\Users\jpaige\Desktop\Local_repositories\LLM_coding_pdf_test_sets
 #   pointing a vector store or RAG indexer at a single location.
 #
 docling:
-  markdown_dir:  'C:\Users\jpaige\Desktop\Local_repositories\LLM_coding_pdf_test_sets\2024_forms_large_files_surya_docling'
+  markdown_dir:  'D:\Local_repository\2024_forms_chunk_2_surya_docling_6_5_2026'
