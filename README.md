@@ -4,13 +4,47 @@ This pipeline converts a corpus of scanned or born-digital PDFs into structured,
 
 ## Installation
 
+**Recommended — uv (fast, no conda conflicts):**
+
 ```powershell
-pip install -r requirements.txt
+# Windows — install uv once per machine
+winget install astral-sh.uv
+
+# Then in the repo directory (creates .venv and installs deps in seconds):
+uv sync
+
+# Run the pipeline
+uv run python run.py
+# or activate the venv and use python directly:
+.venv\Scripts\activate
+python run.py
 ```
 
-For GPU acceleration (recommended for large corpora):
+```bash
+# Mac/Linux — install uv once per machine
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Then in the repo directory:
+uv sync
+uv run python run.py
+```
+
+`uv.lock` is committed to the repo, so every machine gets identical package versions.
+
+**For GPU acceleration (recommended for large corpora):**
 
 ```powershell
+uv pip install torch --index-url https://download.pytorch.org/whl/cu128
+```
+
+**Alternative — plain pip:**
+
+```powershell
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+
+# GPU torch override:
 pip install torch --index-url https://download.pytorch.org/whl/cu128
 ```
 
@@ -20,10 +54,10 @@ pip install torch --index-url https://download.pytorch.org/whl/cu128
 2. Run:
 
 ```powershell
-python run.py
+uv run python run.py
 
 # or with a custom config:
-python run.py --config path/to/config.yaml
+uv run python run.py --config path/to/config.yaml
 ```
 
 ## Configuration
