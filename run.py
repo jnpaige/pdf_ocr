@@ -30,12 +30,16 @@ def load_config(config_path: Path) -> dict:
         return yaml.safe_load(f)
 
 
-def collect_pdfs(pdf_input: str) -> list[Path]:
+def collect_pdfs(pdf_input: str, start_from: str | None = None) -> list[Path]:
     p = Path(pdf_input)
     if p.is_file() and p.suffix.lower() == ".pdf":
         return [p]
     if p.is_dir():
-        return sorted(p.glob("*.pdf"))
+        pdfs = sorted(p.glob("*.pdf"), key=lambda x: x.stem.upper())
+        if start_from:
+            cutoff = start_from.upper()
+            pdfs = [f for f in pdfs if f.stem.upper() >= cutoff]
+        return pdfs
     raise ValueError(f"pdf_input must be a .pdf file or a directory: {pdf_input}")
 
 
@@ -66,12 +70,34 @@ def main():
         default=str(Path(__file__).parent / "config.yaml"),
         help="Path to config.yaml (default: config.yaml alongside run.py)",
     )
+    parser.add_argument(
+        "--output-dir",
+        default=None,
+        metavar="PATH",
+        help="Override output_dir from config",
+    )
+    parser.add_argument(
+        "--start-from",
+        default=None,
+        metavar="STEM",
+        help="Skip PDFs whose stem sorts before this value (case-insensitive, e.g. 16RA1717)",
+    )
     args = parser.parse_args()
 
-    cfg  = load_config(Path(args.config))
-    pdfs = collect_pdfs(cfg["pdf_input"])
+    cfg = load_config(Path(args.config))
 
-    print(f"Found {len(pdfs)} PDF(s)")
+    if args.output_dir:
+        cfg["output_dir"] = args.output_dir
+
+    start_from = args.start_from or cfg.get("start_from")
+
+    pdfs = collect_pdfs(cfg["pdf_input"], start_from=start_from)
+
+    if start_from:
+        print(f"Starting from: {start_from}  ({len(pdfs)} PDF(s) remaining)")
+    else:
+        print(f"Found {len(pdfs)} PDF(s)")
+
     for pdf_path in pdfs:
         process_pdf(pdf_path, cfg)
 
