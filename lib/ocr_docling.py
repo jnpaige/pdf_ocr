@@ -163,8 +163,10 @@ def run_ocr(pdf_path: Path, out_dir: Path, docling_cfg: dict | None = None) -> l
     if docling_cfg is None:
         docling_cfg = {}
 
+    do_ocr = docling_cfg.get("do_ocr", True)
+
     pipeline_options = PdfPipelineOptions()
-    pipeline_options.do_ocr = True
+    pipeline_options.do_ocr = do_ocr
 
     converter = DocumentConverter(
         format_options={
@@ -175,7 +177,10 @@ def run_ocr(pdf_path: Path, out_dir: Path, docling_cfg: dict | None = None) -> l
         }
     )
 
-    print(f"  Running Docling + Surya OCR...")
+    if do_ocr:
+        print(f"  Running Docling + Surya OCR...")
+    else:
+        print(f"  Running Docling (using existing text layer, do_ocr: false)...")
     result = converter.convert(pdf_path)
     doc = result.document
 
@@ -192,9 +197,12 @@ def run_ocr(pdf_path: Path, out_dir: Path, docling_cfg: dict | None = None) -> l
         flat_path.write_text(md_content, encoding="utf-8")
         print(f"  Mirrored markdown → {flat_path}")
 
-    pdf_out = out_dir / f"{pdf_path.stem}_ocr.pdf"
-    _build_searchable_pdf(pdf_path, doc, pdf_out)
-    print(f"  Saved searchable PDF → {pdf_out.name}")
+    if do_ocr:
+        pdf_out = out_dir / f"{pdf_path.stem}_ocr.pdf"
+        _build_searchable_pdf(pdf_path, doc, pdf_out)
+        print(f"  Saved searchable PDF → {pdf_out.name}")
+    else:
+        print(f"  Skipping searchable PDF (do_ocr: false — input already has a text layer)")
 
     return _build_page_results(doc)
 

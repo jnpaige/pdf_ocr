@@ -70,6 +70,7 @@ output_dir: 'C:\path\to\output'   # subfolders created per PDF
 
 docling:
   # markdown_dir: 'C:\path\to\md' # optional: all .md files mirrored here (flat)
+  # do_ocr: false                 # optional: skip Surya OCR (see below)
 ```
 
 ### `markdown_dir`
@@ -81,6 +82,21 @@ docling:
   markdown_dir: 'C:\corpus\markdown'
 ```
 
+### `do_ocr`
+
+Set to `false` when the input PDFs already have an embedded text layer (e.g. they
+are `<pdf_stem>_ocr.pdf` outputs from a previous run of this pipeline). Docling
+parses the existing text layer instead of running Surya, and the redundant
+`<pdf_stem>_ocr.pdf` is not written:
+
+```yaml
+docling:
+  do_ocr: false
+```
+
+Output is otherwise identical (`.md`, `ocr_docling.json`, `text_docling.txt`),
+minus the `_ocr.pdf` file.
+
 ## Output
 
 For each input PDF a subfolder is created:
@@ -91,6 +107,7 @@ For each input PDF a subfolder is created:
                        primary output for RAG indexing and LLM agent ingestion
   <pdf_stem>_ocr.pdf   Original PDF with an invisible Surya text layer added;
                        fully text-searchable and selectable
+                       (omitted when docling.do_ocr is false)
   ocr_docling.json     Structured per-page results (text blocks with confidence scores)
   text_docling.txt     Plain text dump, one "=== Page N ===" section per page
 ```
