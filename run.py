@@ -13,6 +13,11 @@ Output per PDF:  <output_dir>/<pdf_stem>/
     <pdf_stem>.md        Markdown with layout, tables, and reading order preserved
     ocr_docling.json     Structured per-page results
     text_docling.txt     Plain text (one section per page)
+
+Chunked processing:
+    Set chunk_size in config.yaml to split large PDFs into N-page pieces before
+    OCR, then merge the results. Intermediate chunk files are kept under
+    <out_dir>/_chunks/ so a crashed run can resume from where it left off.
 """
 
 import argparse
@@ -69,7 +74,148 @@ def is_already_done(pdf_path: Path, cfg: dict) -> bool:
     return (out_dir / "ocr_docling.json").exists()
 
 
+# ---------------------------------------------------------------------------
+# Chunk helpers
+# ---------------------------------------------------------------------------
+
+def _split_pdf(pdf_path: Path, chunk_size: int, tmp_dir: Path) -> list[tuple[Path, int]]:
+    """Write N-page chunk PDFs to tmp_dir. Returns (chunk_path, start_page) pairs."""
+    import fitz
+
+    src = fitz.open(str(pdf_path))
+    n = len(src)
+    chunks = []
+    for start in range(0, n, chunk_size):
+        end = min(start + chunk_size, n)
+        chunk_doc = fitz.open()
+        chunk_doc.insert_pdf(src, from_page=start, to_page=end - 1)
+        chunk_path = tmp_dir / f"chunk_{start:05d}.pdf"
+        chunk_doc.save(str(chunk_path))
+        chunk_doc.close()
+        chunks.append((chunk_path, start))
+    src.close()
+    return chunks
+
+
+def _merge_searchable_pdfs(chunk_ocr_pdfs: list[Path], out_path: Path) -> None:
+    import fitz
+
+    merged = fitz.open()
+    for cp in chunk_ocr_pdfs:
+        if cp.exists():
+            sub = fitz.open(str(cp))
+            merged.insert_pdf(sub)
+            sub.close()
+    merged.save(str(out_path))
+    merged.close()
+
+
+def _load_chunk_results(chunk_out: Path) -> list[dict] | None:
+    """Return saved results for a chunk if it completed previously, else None."""
+    results_path = chunk_out / "ocr_docling.json"
+    if results_path.exists():
+        return json.loads(results_path.read_text(encoding="utf-8"))
+    return None
+
+
+def process_pdf_chunked(pdf_path: Path, cfg: dict, chunk_size: int):
+    from ocr_docling import run_ocr
+
+    out_dir = Path(cfg["output_dir"]) / pdf_path.stem
+    out_dir.mkdir(parents=True, exist_ok=True)
+    print(f"\n[{pdf_path.name}]  →  {out_dir}")
+
+    tmp_dir = out_dir / "_chunks"
+    tmp_dir.mkdir(exist_ok=True)
+
+    chunks = _split_pdf(pdf_path, chunk_size, tmp_dir)
+    print(f"  Split into {len(chunks)} chunk(s) of up to {chunk_size} pages")
+
+    # Strip markdown_dir — we write the merged .md to the flat dir ourselves
+    chunk_docling_cfg = {k: v for k, v in cfg.get("docling", {}).items() if k != "markdown_dir"}
+
+    all_results: list[dict] = []
+    chunk_mds: list[str] = []
+    chunk_ocr_pdfs: list[Path] = []
+    do_ocr = cfg.get("docling", {}).get("do_ocr", True)
+
+    for chunk_path, start_page in chunks:
+        chunk_stem = chunk_path.stem
+        chunk_out = tmp_dir / chunk_stem
+        chunk_out.mkdir(exist_ok=True)
+
+        # Resume: skip chunks that already finished
+        cached = _load_chunk_results(chunk_out)
+        if cached is not None:
+            print(f"  Resuming — chunk {chunk_stem} already done, loading cached results")
+            chunk_results = cached
+        else:
+            end_page = start_page + chunk_size - 1
+            print(f"  Processing pages {start_page}–{end_page} ({chunk_stem})...")
+            chunk_results = run_ocr(chunk_path, chunk_out, docling_cfg=chunk_docling_cfg)
+            # Cache chunk results so a future resume can skip this chunk
+            (chunk_out / "ocr_docling.json").write_text(
+                json.dumps(chunk_results, indent=2, ensure_ascii=False), encoding="utf-8"
+            )
+
+        # Offset page indices to match position in the full document
+        for r in chunk_results:
+            r["page_index"] += start_page
+        all_results.extend(chunk_results)
+
+        chunk_md = chunk_out / f"{chunk_stem}.md"
+        if chunk_md.exists():
+            chunk_mds.append(chunk_md.read_text(encoding="utf-8"))
+
+        chunk_ocr_pdfs.append(chunk_out / f"{chunk_stem}_ocr.pdf")
+
+    # --- Merge JSON ---
+    ocr_path = out_dir / "ocr_docling.json"
+    ocr_path.write_text(json.dumps(all_results, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    # --- Merge plain text ---
+    text_path = out_dir / "text_docling.txt"
+    sections = [f"=== Page {r['page_index']} ===\n{r['full_text']}" for r in all_results]
+    text_path.write_text("\n\n".join(sections), encoding="utf-8")
+
+    # --- Merge markdown ---
+    md_content = "\n\n".join(chunk_mds)
+    md_path = out_dir / f"{pdf_path.stem}.md"
+    md_path.write_text(md_content, encoding="utf-8")
+
+    flat_md_dir = cfg.get("docling", {}).get("markdown_dir")
+    if flat_md_dir:
+        flat_dir = Path(flat_md_dir)
+        flat_dir.mkdir(parents=True, exist_ok=True)
+        (flat_dir / f"{pdf_path.stem}.md").write_text(md_content, encoding="utf-8")
+        print(f"  Mirrored markdown → {flat_dir / pdf_path.stem}.md")
+
+    # --- Merge searchable PDF ---
+    if do_ocr:
+        merged_pdf_path = out_dir / f"{pdf_path.stem}_ocr.pdf"
+        _merge_searchable_pdfs(chunk_ocr_pdfs, merged_pdf_path)
+        print(f"  Merged searchable PDF → {merged_pdf_path.name}")
+
+    print(f"  Saved: {ocr_path.name}, {text_path.name}, {md_path.name}")
+    print(f"  Done → {out_dir}")
+
+
+# ---------------------------------------------------------------------------
+# Single-PDF processing (unchanged path for small PDFs)
+# ---------------------------------------------------------------------------
+
 def process_pdf(pdf_path: Path, cfg: dict):
+    chunk_size = cfg.get("chunk_size")
+    if chunk_size:
+        import fitz
+        src = fitz.open(str(pdf_path))
+        n_pages = len(src)
+        src.close()
+        if n_pages > chunk_size:
+            print(f"  PDF has {n_pages} pages — chunking into {chunk_size}-page pieces")
+            process_pdf_chunked(pdf_path, cfg, chunk_size)
+            return
+
     out_dir = Path(cfg["output_dir"]) / pdf_path.stem
     out_dir.mkdir(parents=True, exist_ok=True)
 

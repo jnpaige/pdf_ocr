@@ -1,0 +1,19 @@
+# Input — Phase II report PDFs for Calcasieu/Evangeline
+pdf_input: 'C:\Users\jpaige\Desktop\Local_research_repositories\Phase II Reports\Phase II Reports\Calcasieu_Evangeline'
+
+# Split PDFs larger than this many pages into chunks before OCR, then merge.
+# Prevents std::bad_alloc on very large PDFs. Intermediate chunk files are
+# kept under <out_dir>/_chunks/ so a crashed run can resume mid-document.
+chunk_size: 50
+
+# Output directory — a subfolder per PDF is created here automatically
+output_dir: 'C:\Users\jpaige\Desktop\Local_research_repositories\phase_II_report_docling\Calcasieu_Evangeline'
+
+# Docling + Surya pipeline configuration
+#
+# markdown_dir (optional):
+#   All .md files are also written here as a flat directory — useful for
+#   pointing a vector store or RAG indexer at a single location.
+#
+docling:
+  markdown_dir: 'C:\Users\jpaige\Desktop\Local_research_repositories\phase_II_report_docling\Calcasieu_Evangeline_md'
