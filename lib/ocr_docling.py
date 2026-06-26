@@ -269,7 +269,15 @@ def _build_searchable_pdf(pdf_path: Path, doc, out_path: Path) -> None:
 
 
 def _build_page_results(doc) -> list[dict]:
-    """Convert a DoclingDocument to per-page result dicts."""
+    """Convert a DoclingDocument to per-page result dicts.
+
+    Heading items (TitleItem, SectionHeaderItem) are prefixed with the same
+    markdown # markers that docling's export_to_markdown() produces, so the
+    text_docling.txt output carries both page boundaries and heading structure
+    without requiring cross-referencing against the .md file.
+    """
+    from docling_core.types.doc import SectionHeaderItem, TitleItem
+
     page_texts: dict[int, list[str]] = defaultdict(list)
 
     for item, _level in doc.iterate_items():
@@ -278,6 +286,14 @@ def _build_page_results(doc) -> list[dict]:
             continue
         prov = getattr(item, "prov", None)
         page_no = (prov[0].page_no - 1) if prov else 0  # 0-indexed
+
+        if isinstance(item, TitleItem):
+            text = f"# {text}"
+        elif isinstance(item, SectionHeaderItem):
+            # Matches docling's own markdown export: level 1 → ##, level 2 → ###, etc.
+            num_hashes = min(item.level + 1, 6)
+            text = f"{'#' * num_hashes} {text}"
+
         page_texts[page_no].append(text)
 
     if not page_texts:
