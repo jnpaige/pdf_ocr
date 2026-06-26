@@ -23,7 +23,7 @@ For each input PDF a subfolder is created:
 
 Both `text_docling.txt` and `<pdf_stem>.md` are kept. The txt file is the primary input for downstream LLM tools because it carries both page-indexed boundaries and heading structure in one place. The md file is retained as a clean reading copy and for RAG/vector-store ingestion.
 
-> **Note — prior versions:** Before this change, docling's markdown exporter (`export_to_markdown`) and the custom `_build_page_results()` function produced complementary but separate outputs: the `.md` had heading markers but no page boundaries, while `text_docling.txt` had page boundaries but no heading markers. Pipelines that needed both had to cross-reference the two files (e.g. search each heading string from the .md against txt pages to determine its docling page index). The current version embeds heading markup directly in `text_docling.txt`, eliminating that merge step.
+**Note:** Earlier version had a bug where docling's markdown exporter (`export_to_markdown`) and the custom `_build_page_results()` function produced complementary but separate outputs: the `.md` had heading markers but no page boundaries, while `text_docling.txt` had page boundaries but no heading markers. Pipelines that needed both had to cross-reference the two files (e.g. search each heading string from the .md against txt pages to determine its docling page index). The current version embeds heading markup directly in `text_docling.txt`, eliminating that merge step.
 
 Downstream tools consume different outputs:
 
