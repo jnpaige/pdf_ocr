@@ -54,7 +54,9 @@ def collect_pdfs(
         ]
         pdfs = []
         for name in names:
-            stem = Path(name).stem
+            # Strip .pdf suffix if present, but don't use Path.stem — it would
+            # split on any dot in the filename (e.g. "et al. 2002" → "et al")
+            stem = name[:-4] if name.lower().endswith(".pdf") else name
             candidate = p / f"{stem}.pdf"
             if candidate.exists():
                 pdfs.append(candidate)
