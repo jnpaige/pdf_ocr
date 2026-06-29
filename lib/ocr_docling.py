@@ -204,7 +204,23 @@ def run_ocr(pdf_path: Path, out_dir: Path, docling_cfg: dict | None = None) -> l
     else:
         print(f"  Skipping searchable PDF (do_ocr: false — input already has a text layer)")
 
-    return _build_page_results(doc)
+    results = _build_page_results(doc)
+
+    # Write headings.json alongside the other outputs
+    txt_path = out_dir / "text_docling.txt"
+    if txt_path.exists():
+        h_path = write_headings_json(txt_path, out_dir, pdf_path.stem)
+        print(f"  Saved headings    → {h_path.name}  ({_count_headings(h_path)} headings)")
+
+    return results
+
+
+def _count_headings(h_path: Path) -> int:
+    import json
+    try:
+        return json.loads(h_path.read_text(encoding="utf-8")).get("n_headings", 0)
+    except Exception:
+        return 0
 
 
 def _build_searchable_pdf(pdf_path: Path, doc, out_path: Path) -> None:
@@ -266,6 +282,54 @@ def _build_searchable_pdf(pdf_path: Path, doc, out_path: Path) -> None:
 
     src.save(str(out_path))
     src.close()
+
+
+def extract_headings_from_txt(txt_path: Path) -> list[dict]:
+    """Extract heading lines from text_docling.txt into a flat list.
+
+    Returns [{"page": int, "text": str}, ...] — one entry per heading line,
+    in document order. Noise headings are filtered out:
+      - purely numeric (e.g. "## 1", "## 4" from OCR'd TOC numbers)
+      - very short after stripping (< 4 chars — single letters, punctuation)
+      - look like page numbers or math fragments (mostly digits + spaces/punctuation)
+    """
+    import re
+    heading_re = re.compile(r'^#{1,6}\s+(.+)$')
+    page_re    = re.compile(r'^===\s*Page\s+(\d+)\s*===$')
+    noise_re   = re.compile(r'^[\d\s\.\-\,\:\;\(\)\[\]\{\}\/\\]+$')
+
+    current_page = 0
+    headings: list[dict] = []
+
+    for line in txt_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+        pm = page_re.match(line.strip())
+        if pm:
+            current_page = int(pm.group(1))
+            continue
+        hm = heading_re.match(line.strip())
+        if hm:
+            text = hm.group(1).strip()
+            if len(text) < 4:
+                continue
+            if noise_re.match(text):
+                continue
+            headings.append({"page": current_page, "text": text})
+
+    return headings
+
+
+def write_headings_json(txt_path: Path, out_dir: Path, document_name: str) -> Path:
+    """Extract headings from txt_path and write headings.json to out_dir."""
+    import json
+    headings = extract_headings_from_txt(txt_path)
+    out = {
+        "document": document_name,
+        "n_headings": len(headings),
+        "headings": headings,
+    }
+    out_path = out_dir / "headings.json"
+    out_path.write_text(json.dumps(out, indent=2, ensure_ascii=False), encoding="utf-8")
+    return out_path
 
 
 def _build_page_results(doc) -> list[dict]:
