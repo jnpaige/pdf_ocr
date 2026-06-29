@@ -150,8 +150,11 @@ class SuryaPdfPipeline(StandardPdfPipeline):
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
-def run_ocr(pdf_path: Path, out_dir: Path, docling_cfg: dict | None = None) -> list[dict]:
+def run_ocr(pdf_path: Path, out_dir: Path, docling_cfg: dict | None = None, stem: str | None = None) -> list[dict]:
     """Run Docling + Surya on a PDF. Saves <stem>.md to out_dir.
+
+    stem overrides pdf_path.stem for output file naming — used in backfill mode
+    where the input is a *_ocr.pdf but outputs should use the canonical report name.
 
     Returns per-page result dicts with keys:
       page_index, image_path, text_lines, full_text
@@ -162,6 +165,8 @@ def run_ocr(pdf_path: Path, out_dir: Path, docling_cfg: dict | None = None) -> l
 
     if docling_cfg is None:
         docling_cfg = {}
+    if stem is None:
+        stem = pdf_path.stem
 
     do_ocr = docling_cfg.get("do_ocr", True)
 
@@ -185,7 +190,7 @@ def run_ocr(pdf_path: Path, out_dir: Path, docling_cfg: dict | None = None) -> l
     doc = result.document
 
     md_content = doc.export_to_markdown()
-    md_path = out_dir / f"{pdf_path.stem}.md"
+    md_path = out_dir / f"{stem}.md"
     md_path.write_text(md_content, encoding="utf-8")
     print(f"  Saved markdown → {md_path.name}")
 
@@ -193,12 +198,12 @@ def run_ocr(pdf_path: Path, out_dir: Path, docling_cfg: dict | None = None) -> l
     if flat_md_dir:
         flat_dir = Path(flat_md_dir)
         flat_dir.mkdir(parents=True, exist_ok=True)
-        flat_path = flat_dir / f"{pdf_path.stem}.md"
+        flat_path = flat_dir / f"{stem}.md"
         flat_path.write_text(md_content, encoding="utf-8")
         print(f"  Mirrored markdown → {flat_path}")
 
     if do_ocr:
-        pdf_out = out_dir / f"{pdf_path.stem}_ocr.pdf"
+        pdf_out = out_dir / f"{stem}_ocr.pdf"
         _build_searchable_pdf(pdf_path, doc, pdf_out)
         print(f"  Saved searchable PDF → {pdf_out.name}")
     else:

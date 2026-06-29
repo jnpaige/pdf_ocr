@@ -35,10 +35,22 @@ def load_config(config_path: Path) -> dict:
         return yaml.safe_load(f)
 
 
+def _report_stem(pdf_path: Path) -> str:
+    """Return the report folder name for this PDF, stripping a trailing _ocr suffix.
+
+    When backfilling from existing *_ocr.pdf outputs (from_ocr_pdf mode), the
+    input filename is e.g. "22-4793_Gray 2014_ocr.pdf".  Stripping "_ocr" gives
+    the canonical report stem used for the output subfolder and .md filename.
+    """
+    stem = pdf_path.stem
+    return stem[:-4] if stem.endswith("_ocr") else stem
+
+
 def collect_pdfs(
     pdf_input: str,
     start_from: str | None = None,
     file_list: str | None = None,
+    from_ocr_pdf: bool = False,
 ) -> list[Path]:
     p = Path(pdf_input)
     if p.is_file() and p.suffix.lower() == ".pdf":
@@ -64,6 +76,12 @@ def collect_pdfs(
                 print(f"  WARNING: listed file not found, skipping: {candidate}")
         return pdfs
 
+    if from_ocr_pdf:
+        # Backfill mode: find *_ocr.pdf inside immediate subfolders.
+        # Each subfolder is one report: <report_name>/<report_name>_ocr.pdf
+        pdfs = sorted(p.glob("*/*_ocr.pdf"), key=lambda x: x.parent.name.upper())
+        return pdfs
+
     pdfs = sorted(p.glob("*.pdf"), key=lambda x: x.stem.upper())
     if start_from:
         cutoff = start_from.upper()
@@ -72,7 +90,7 @@ def collect_pdfs(
 
 
 def is_already_done(pdf_path: Path, cfg: dict) -> bool:
-    out_dir = Path(cfg["output_dir"]) / pdf_path.stem
+    out_dir = Path(cfg["output_dir"]) / _report_stem(pdf_path)
     return (out_dir / "ocr_docling.json").exists()
 
 
@@ -123,7 +141,8 @@ def _load_chunk_results(chunk_out: Path) -> list[dict] | None:
 def process_pdf_chunked(pdf_path: Path, cfg: dict, chunk_size: int):
     from ocr_docling import run_ocr
 
-    out_dir = Path(cfg["output_dir"]) / pdf_path.stem
+    stem = _report_stem(pdf_path)
+    out_dir = Path(cfg["output_dir"]) / stem
     out_dir.mkdir(parents=True, exist_ok=True)
     print(f"\n[{pdf_path.name}]  →  {out_dir}")
 
@@ -182,19 +201,19 @@ def process_pdf_chunked(pdf_path: Path, cfg: dict, chunk_size: int):
 
     # --- Merge markdown ---
     md_content = "\n\n".join(chunk_mds)
-    md_path = out_dir / f"{pdf_path.stem}.md"
+    md_path = out_dir / f"{stem}.md"
     md_path.write_text(md_content, encoding="utf-8")
 
     flat_md_dir = cfg.get("docling", {}).get("markdown_dir")
     if flat_md_dir:
         flat_dir = Path(flat_md_dir)
         flat_dir.mkdir(parents=True, exist_ok=True)
-        (flat_dir / f"{pdf_path.stem}.md").write_text(md_content, encoding="utf-8")
-        print(f"  Mirrored markdown → {flat_dir / pdf_path.stem}.md")
+        (flat_dir / f"{stem}.md").write_text(md_content, encoding="utf-8")
+        print(f"  Mirrored markdown → {flat_dir / stem}.md")
 
     # --- Merge searchable PDF ---
     if do_ocr:
-        merged_pdf_path = out_dir / f"{pdf_path.stem}_ocr.pdf"
+        merged_pdf_path = out_dir / f"{stem}_ocr.pdf"
         _merge_searchable_pdfs(chunk_ocr_pdfs, merged_pdf_path)
         print(f"  Merged searchable PDF → {merged_pdf_path.name}")
 
@@ -218,13 +237,14 @@ def process_pdf(pdf_path: Path, cfg: dict):
             process_pdf_chunked(pdf_path, cfg, chunk_size)
             return
 
-    out_dir = Path(cfg["output_dir"]) / pdf_path.stem
+    stem = _report_stem(pdf_path)
+    out_dir = Path(cfg["output_dir"]) / stem
     out_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"\n[{pdf_path.name}]  →  {out_dir}")
 
     from ocr_docling import run_ocr
-    results = run_ocr(pdf_path, out_dir, docling_cfg=cfg.get("docling", {}))
+    results = run_ocr(pdf_path, out_dir, docling_cfg=cfg.get("docling", {}), stem=stem)
 
     ocr_path = out_dir / "ocr_docling.json"
     ocr_path.write_text(json.dumps(results, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -276,8 +296,9 @@ def main():
         # Resolve relative to the config file's directory
         file_list = str((Path(args.config).parent / file_list).resolve())
     skip_existing = cfg.get("skip_existing", False)
+    from_ocr_pdf = cfg.get("from_ocr_pdf", False)
 
-    pdfs = collect_pdfs(cfg["pdf_input"], start_from=start_from, file_list=file_list)
+    pdfs = collect_pdfs(cfg["pdf_input"], start_from=start_from, file_list=file_list, from_ocr_pdf=from_ocr_pdf)
 
     if file_list:
         print(f"Using file list: {file_list}  ({len(pdfs)} PDF(s) found)")
