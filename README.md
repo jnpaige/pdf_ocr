@@ -39,6 +39,26 @@ Once per-trinomial page maps exist, the same downstream tools as in the site for
 
 ---
 
+## Run metadata standard
+
+The tools that turn pdf_ocr output into LLM-derived data — [site_form_segmenter](https://github.com/jnpaige/site_form_segmenter) (both its site-form and report segmenters), [site_coder](), and site_vocab_extractor all write their run output in the same self-documenting shape. Each output is provided in a folder which supplies information about wwhich model produced this file, when, with what prompt, and under what chunking strategy, and applied to what corpus. 
+
+Every model run creates its own folder, `runs/<YYYYMMDD_HHMM>_<gitsha>/`. Every output filename is prefixed with the model (or model pair) that produced it: `<model_slug>__<item>.<ext>`. If a tool reprocesses the same item with a different model, that produces a second, distinct file.
+
+The contents of the run folders are as follows:
+
+| File | Purpose |
+|---|---|
+| a config snapshot (original filename preserved) | the exact settings used for this run |
+| `prompts.yaml` | full text of every prompt used |
+| `run_metadata.json` | run-level record: `run_id`, `started_at`/`completed_at`, `elapsed_seconds`, the model(s) used, a `chunking` block describing the chunking/context strategy in effect, per-item timings, and token statistics |
+| `inventory.csv` | one row per output file which records: `run_id, tool, model, file_name, file_path, source_input, prompt_file, prompt_snapshot_key, temperature, num_ctx, chunk_strategy, produced_at, output_file_path` |
+
+Each output file also embeds its own model, timestamp, and chunking fields directly in its JSON (exact field names vary slightly by tool — see each tool's README for its schema), so a single file is self-describing even outside its run folder.
+
+
+---
+
 ## Installation
 
 I use uv for Python environment management. It is far faster than conda or pip for snapping a repo to the right environment, it works identically on Windows, Mac, and Linux, and it never requires manually activating a virtual environment.
