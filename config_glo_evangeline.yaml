@@ -1,0 +1,11 @@
+# GLO survey field notes — Evangeline (43 PDFs, ~10,820 pages total)
+pdf_input:  'C:\Users\jpaige\Desktop\local_repositories\GLO_survey_notes_ocr\Glo_map_field_notes_evangeline'
+output_dir: 'C:\Users\jpaige\Desktop\local_repositories\GLO_survey_notes_ocr\Glo_map_field_notes_evangeline_ocr'
+
+# Skip PDFs that already have a completed ocr_docling.json — safe to re-run this
+# config if the process is interrupted.
+skip_existing: true
+
+# Large PDFs (up to ~430 pages) are split into 50-page chunks before OCR so a
+# crash only loses the in-progress chunk, not the whole file.
+chunk_size: 50

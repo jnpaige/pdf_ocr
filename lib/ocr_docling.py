@@ -40,6 +40,27 @@ from docling.models.base_ocr_model import BaseOcrModel
 from docling.utils.profiling import TimeRecorder
 
 
+# Raw per-page OCR text, captured straight from Surya before docling's layout
+# model gets a chance to misclassify a page (e.g. a page of dense handwriting)
+# as a Picture and drop all its text cells from the assembled document.
+# Keyed by 1-indexed page_no; cleared at the start of each run_ocr() call.
+# Module-level because DocumentConverter owns the pipeline/model lifecycle, so
+# run_ocr() has no direct handle to the SuryaOcrModel instance to read from
+# afterward. Safe because PDFs are processed one at a time, single-process.
+_raw_ocr_cells_by_page: dict[int, list[TextCell]] = {}
+
+
+def _cells_reading_order_text(cells: list[TextCell]) -> str:
+    """Join OCR cells into text approximating reading order (top-to-bottom,
+    left-to-right within a line band)."""
+    def sort_key(c: TextCell):
+        bbox = c.rect.to_bounding_box()
+        return (round(bbox.t / 15.0), bbox.l)
+
+    ordered = sorted(cells, key=sort_key)
+    return "\n".join(c.text for c in ordered if c.text and c.text.strip())
+
+
 class SuryaOcrModel(BaseOcrModel):
     scale = 2  # render at 144 dpi (72 * 2); sufficient for Surya
 
@@ -123,6 +144,7 @@ class SuryaOcrModel(BaseOcrModel):
                         )
 
                 self.post_process_cells(all_ocr_cells, page)
+                _raw_ocr_cells_by_page[page.page_no] = all_ocr_cells
 
             yield page
 
@@ -161,7 +183,7 @@ def run_ocr(pdf_path: Path, out_dir: Path, docling_cfg: dict | None = None, stem
     """
     from docling.document_converter import DocumentConverter, PdfFormatOption
     from docling.datamodel.base_models import InputFormat
-    from docling.datamodel.pipeline_options import PdfPipelineOptions
+    from docling.datamodel.pipeline_options import PdfPipelineOptions, PictureDescriptionApiOptions
 
     if docling_cfg is None:
         docling_cfg = {}
@@ -169,9 +191,33 @@ def run_ocr(pdf_path: Path, out_dir: Path, docling_cfg: dict | None = None, stem
         stem = pdf_path.stem
 
     do_ocr = docling_cfg.get("do_ocr", True)
+    extract_figures = docling_cfg.get("extract_figures", False)
+    picture_description_model = docling_cfg.get("picture_description_model")
 
     pipeline_options = PdfPipelineOptions()
     pipeline_options.do_ocr = do_ocr
+
+    if extract_figures:
+        pipeline_options.generate_picture_images = True
+        pipeline_options.images_scale = docling_cfg.get("figures_scale", 2.0)
+        pipeline_options.do_picture_classification = docling_cfg.get("classify_figures", False)
+
+    if picture_description_model:
+        pipeline_options.enable_remote_services = True
+        pipeline_options.do_picture_description = True
+        pipeline_options.picture_description_options = PictureDescriptionApiOptions(
+            url=docling_cfg.get("picture_description_base_url", "http://localhost:11434") + "/v1/chat/completions",
+            params={"model": picture_description_model},
+            prompt=docling_cfg.get(
+                "picture_description_prompt",
+                "Describe this figure from an archaeology report in 1-3 sentences. "
+                "If it shows a lithic artifact, note the artifact type, reduction "
+                "technique, or technological features visible (e.g. platform, "
+                "bulb of percussion, retouch, cortex). If it is a map, chart, or "
+                "photo of a site or excavation, say so plainly instead.",
+            ),
+            timeout=docling_cfg.get("picture_description_timeout", 120),
+        )
 
     converter = DocumentConverter(
         format_options={
@@ -181,6 +227,8 @@ def run_ocr(pdf_path: Path, out_dir: Path, docling_cfg: dict | None = None, stem
             )
         }
     )
+
+    _raw_ocr_cells_by_page.clear()
 
     if do_ocr:
         print(f"  Running Docling + Surya OCR...")
@@ -209,7 +257,10 @@ def run_ocr(pdf_path: Path, out_dir: Path, docling_cfg: dict | None = None, stem
     else:
         print(f"  Skipping searchable PDF (do_ocr: false — input already has a text layer)")
 
-    results = _build_page_results(doc)
+    results, n_recovered = _build_page_results(doc, raw_cells=_raw_ocr_cells_by_page)
+    if n_recovered:
+        print(f"  Recovered {n_recovered} page(s) via raw OCR fallback "
+              f"(layout model produced little/no text there)")
 
     # Write headings.json alongside the other outputs
     txt_path = out_dir / "text_docling.txt"
@@ -217,7 +268,59 @@ def run_ocr(pdf_path: Path, out_dir: Path, docling_cfg: dict | None = None, stem
         h_path = write_headings_json(txt_path, out_dir, pdf_path.stem)
         print(f"  Saved headings    → {h_path.name}  ({_count_headings(h_path)} headings)")
 
+    if extract_figures:
+        n_figs = _extract_figures(doc, out_dir, captioned=bool(picture_description_model))
+        print(f"  Saved figures     → figures/  ({n_figs} figure(s))")
+
     return results
+
+
+def _extract_figures(doc, out_dir: Path, captioned: bool = False) -> int:
+    """Save each detected picture/figure as a PNG under <out_dir>/figures/, plus
+    a figures.json manifest recording page, bbox, classification (if enabled),
+    and VLM caption (if picture_description_model was set). Returns the count
+    of figures saved.
+    """
+    import json
+
+    figures_dir = out_dir / "figures"
+    figures_dir.mkdir(exist_ok=True)
+
+    manifest: list[dict] = []
+    for i, pic in enumerate(doc.pictures):
+        image = pic.get_image(doc)
+        if image is None:
+            continue
+
+        prov = pic.prov[0] if pic.prov else None
+        page_no = (prov.page_no - 1) if prov else None  # 0-indexed, matches text_docling.txt
+        bbox = prov.bbox if prov else None
+
+        fname = f"fig_p{page_no if page_no is not None else 'x'}_{i:03d}.png"
+        image.save(figures_dir / fname)
+
+        entry = {
+            "file": fname,
+            "page": page_no,
+            "bbox": [bbox.l, bbox.t, bbox.r, bbox.b] if bbox else None,
+        }
+
+        classification = getattr(pic.meta, "classification", None) if pic.meta else None
+        if classification is not None:
+            pred = classification.get_main_prediction()
+            entry["classification"] = pred.class_name
+
+        if captioned:
+            description = getattr(pic.meta, "description", None) if pic.meta else None
+            entry["caption"] = description.text if description else None
+
+        manifest.append(entry)
+
+    (figures_dir / "figures.json").write_text(
+        json.dumps({"n_figures": len(manifest), "figures": manifest}, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    return len(manifest)
 
 
 def _count_headings(h_path: Path) -> int:
@@ -337,13 +440,21 @@ def write_headings_json(txt_path: Path, out_dir: Path, document_name: str) -> Pa
     return out_path
 
 
-def _build_page_results(doc) -> list[dict]:
+def _build_page_results(doc, raw_cells: dict[int, list] | None = None) -> tuple[list[dict], int]:
     """Convert a DoclingDocument to per-page result dicts.
 
     Heading items (TitleItem, SectionHeaderItem) are prefixed with the same
     markdown # markers that docling's export_to_markdown() produces, so the
     text_docling.txt output carries both page boundaries and heading structure
     without requiring cross-referencing against the .md file.
+
+    raw_cells (optional): {page_no (1-indexed): [TextCell, ...]} straight from
+    Surya. Docling's layout model sometimes classifies an entire page of dense
+    handwriting as a single Picture region, which silently drops every OCR'd
+    text cell on that page from doc.iterate_items() even though Surya read it
+    correctly. When that happens (the assembled text is shorter than what raw
+    OCR actually captured), we fall back to the raw cells for that page so no
+    recognized text is lost. Returns (results, n_pages_recovered_via_fallback).
     """
     from docling_core.types.doc import SectionHeaderItem, TitleItem
 
@@ -365,16 +476,41 @@ def _build_page_results(doc) -> list[dict]:
 
         page_texts[page_no].append(text)
 
-    if not page_texts:
-        return []
+    raw_cells = raw_cells or {}
+    max_raw_page_index = max((pn - 1 for pn in raw_cells), default=-1)
+    if not page_texts and max_raw_page_index < 0:
+        return [], 0
 
-    n_pages = max(page_texts.keys()) + 1
-    return [
-        {
+    n_pages = max(max(page_texts.keys(), default=-1), max_raw_page_index) + 1
+
+    results = []
+    n_recovered = 0
+    for i in range(n_pages):
+        assembled_lines = page_texts.get(i, [])
+        assembled_text = "\n".join(assembled_lines)
+
+        cells = raw_cells.get(i + 1)  # raw_cells is keyed 1-indexed
+        if cells:
+            fallback_text = _cells_reading_order_text(cells)
+            if len(fallback_text.strip()) > len(assembled_text.strip()):
+                n_recovered += 1
+                results.append({
+                    "page_index": i,
+                    "image_path": "",
+                    "text_lines": [
+                        {"text": c.text, "confidence": c.confidence, "bbox": []}
+                        for c in sorted(cells, key=lambda c: (round(c.rect.to_bounding_box().t / 15.0), c.rect.to_bounding_box().l))
+                        if c.text and c.text.strip()
+                    ],
+                    "full_text": fallback_text,
+                })
+                continue
+
+        results.append({
             "page_index": i,
             "image_path": "",
-            "text_lines": [{"text": t, "confidence": 1.0, "bbox": []} for t in page_texts.get(i, [])],
-            "full_text":  "\n".join(page_texts.get(i, [])),
-        }
-        for i in range(n_pages)
-    ]
+            "text_lines": [{"text": t, "confidence": 1.0, "bbox": []} for t in assembled_lines],
+            "full_text": assembled_text,
+        })
+
+    return results, n_recovered

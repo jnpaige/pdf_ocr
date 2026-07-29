@@ -1,0 +1,12 @@
+# Quick single-PDF smoke test before running the full pilot corpus.
+pdf_input:  'C:\Users\jpaige\Box\4. Research\LLM_segmenting_procedural_units\pdfs\Tryon (2006) Koimilot Locus 1.pdf'
+output_dir: 'C:\Users\jpaige\Box\4. Research\LLM_segmenting_procedural_units\pdfs_ocr_figures_pilot'
+
+docling:
+  extract_figures: true
+  figures_scale: 2.0
+  classify_figures: true
+
+  picture_description_model:    'gemma3:12b'
+  picture_description_base_url: 'http://localhost:11434'
+  picture_description_timeout:  180
