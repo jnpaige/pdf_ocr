@@ -61,6 +61,20 @@ def _cells_reading_order_text(cells: list[TextCell]) -> str:
     return "\n".join(c.text for c in ordered if c.text and c.text.strip())
 
 
+def _bbox_to_dict(bbox) -> dict:
+    """Serialize a docling BoundingBox as a plain dict, self-describing its
+    coordinate origin (TOPLEFT or BOTTOMLEFT — docling item bboxes and raw
+    Surya cell bboxes don't share a convention, so origin travels with every
+    box rather than being normalized/assumed away here)."""
+    if bbox is None:
+        return {}
+    origin = getattr(bbox, "coord_origin", None)
+    return {
+        "l": bbox.l, "t": bbox.t, "r": bbox.r, "b": bbox.b,
+        "origin": origin.value if origin is not None else "TOPLEFT",
+    }
+
+
 class SuryaOcrModel(BaseOcrModel):
     scale = 2  # render at 144 dpi (72 * 2); sufficient for Surya
 
@@ -172,14 +186,19 @@ class SuryaPdfPipeline(StandardPdfPipeline):
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
-def run_ocr(pdf_path: Path, out_dir: Path, docling_cfg: dict | None = None, stem: str | None = None) -> list[dict]:
-    """Run Docling + Surya on a PDF. Saves <stem>.md to out_dir.
+def build_converter(docling_cfg: dict | None = None):
+    """Build a Docling DocumentConverter configured for the Surya OCR pipeline.
 
-    stem overrides pdf_path.stem for output file naming — used in backfill mode
-    where the input is a *_ocr.pdf but outputs should use the canonical report name.
-
-    Returns per-page result dicts with keys:
-      page_index, image_path, text_lines, full_text
+    Expensive: constructing the pipeline loads Surya's OCR models
+    (FoundationPredictor, DetectionPredictor, RecognitionPredictor — real
+    transformer weights onto the GPU) plus Docling's own layout/table models.
+    Build ONE of these per run.py invocation and pass it into every run_ocr()
+    call for that run via the converter= param, rather than letting run_ocr()
+    build its own — a fresh DocumentConverter per PDF (the previous default)
+    reloads all of those models from scratch for every single document, which
+    across a few thousand PDFs in one long-lived process is what caused
+    creeping memory growth/OOM on large corpus runs, on top of burning most
+    of the wall-clock time on reload rather than OCR.
     """
     from docling.document_converter import DocumentConverter, PdfFormatOption
     from docling.datamodel.base_models import InputFormat
@@ -187,8 +206,6 @@ def run_ocr(pdf_path: Path, out_dir: Path, docling_cfg: dict | None = None, stem
 
     if docling_cfg is None:
         docling_cfg = {}
-    if stem is None:
-        stem = pdf_path.stem
 
     do_ocr = docling_cfg.get("do_ocr", True)
     extract_figures = docling_cfg.get("extract_figures", False)
@@ -219,7 +236,7 @@ def run_ocr(pdf_path: Path, out_dir: Path, docling_cfg: dict | None = None, stem
             timeout=docling_cfg.get("picture_description_timeout", 120),
         )
 
-    converter = DocumentConverter(
+    return DocumentConverter(
         format_options={
             InputFormat.PDF: PdfFormatOption(
                 pipeline_cls=SuryaPdfPipeline,
@@ -227,6 +244,39 @@ def run_ocr(pdf_path: Path, out_dir: Path, docling_cfg: dict | None = None, stem
             )
         }
     )
+
+
+def run_ocr(
+    pdf_path: Path,
+    out_dir: Path,
+    docling_cfg: dict | None = None,
+    stem: str | None = None,
+    converter=None,
+) -> list[dict]:
+    """Run Docling + Surya on a PDF. Saves <stem>.md to out_dir.
+
+    stem overrides pdf_path.stem for output file naming — used in backfill mode
+    where the input is a *_ocr.pdf but outputs should use the canonical report name.
+
+    converter: an optional pre-built DocumentConverter (see build_converter).
+    Reused across many run_ocr() calls in one process instead of rebuilt per
+    call — pass the same instance across a whole corpus run. Only built
+    on-demand here (once) if omitted, for callers that just want one PDF done.
+
+    Returns per-page result dicts with keys:
+      page_index, image_path, text_lines, full_text, md_text
+    """
+    if docling_cfg is None:
+        docling_cfg = {}
+    if stem is None:
+        stem = pdf_path.stem
+
+    do_ocr = docling_cfg.get("do_ocr", True)
+    extract_figures = docling_cfg.get("extract_figures", False)
+    picture_description_model = docling_cfg.get("picture_description_model")
+
+    if converter is None:
+        converter = build_converter(docling_cfg)
 
     _raw_ocr_cells_by_page.clear()
 
@@ -237,7 +287,14 @@ def run_ocr(pdf_path: Path, out_dir: Path, docling_cfg: dict | None = None, stem
     result = converter.convert(pdf_path)
     doc = result.document
 
-    md_content = doc.export_to_markdown()
+    results, n_recovered, fallback_pages = _build_page_results(doc, raw_cells=_raw_ocr_cells_by_page)
+    if n_recovered:
+        print(f"  Recovered {n_recovered} page(s) via raw OCR fallback "
+              f"(layout model produced little/no text there)")
+
+    # Page-delimited, same `=== Page N ===` convention as text_docling.txt,
+    # with the same fallback substitution — see _build_page_results' docstring.
+    md_content = "\n\n".join(f"=== Page {r['page_index']} ===\n{r['md_text']}" for r in results)
     md_path = out_dir / f"{stem}.md"
     md_path.write_text(md_content, encoding="utf-8")
     print(f"  Saved markdown → {md_path.name}")
@@ -250,17 +307,19 @@ def run_ocr(pdf_path: Path, out_dir: Path, docling_cfg: dict | None = None, stem
         flat_path.write_text(md_content, encoding="utf-8")
         print(f"  Mirrored markdown → {flat_path}")
 
+    pdf_out = out_dir / f"{stem}_ocr.pdf"
     if do_ocr:
-        pdf_out = out_dir / f"{stem}_ocr.pdf"
-        _build_searchable_pdf(pdf_path, doc, pdf_out)
+        _build_searchable_pdf(pdf_path, doc, pdf_out,
+                               raw_cells=_raw_ocr_cells_by_page, fallback_pages=fallback_pages)
         print(f"  Saved searchable PDF → {pdf_out.name}")
     else:
-        print(f"  Skipping searchable PDF (do_ocr: false — input already has a text layer)")
-
-    results, n_recovered = _build_page_results(doc, raw_cells=_raw_ocr_cells_by_page)
-    if n_recovered:
-        print(f"  Recovered {n_recovered} page(s) via raw OCR fallback "
-              f"(layout model produced little/no text there)")
+        # do_ocr: false means pdf_path already carries its own text layer (a
+        # prior run's *_ocr.pdf, in from_ocr_pdf backfill mode) — there's no
+        # fresh OCR pass to overlay, so _build_searchable_pdf doesn't apply.
+        # Still stamp the `=== Page N ===` label so backfilled documents end
+        # up matching fresh ones instead of permanently missing it.
+        _stamp_existing_pdf(pdf_path, pdf_out)
+        print(f"  Stamped page labels → {pdf_out.name} (do_ocr: false — reused existing text layer)")
 
     # Write headings.json alongside the other outputs
     txt_path = out_dir / "text_docling.txt"
@@ -331,16 +390,86 @@ def _count_headings(h_path: Path) -> int:
         return 0
 
 
-def _build_searchable_pdf(pdf_path: Path, doc, out_path: Path) -> None:
-    """Overlay Surya's OCR text as an invisible layer on each page of the PDF.
+def _stamp_page_label(fitz_page, page_idx: int) -> None:
+    """Stamp `=== Page N ===` as real visible+selectable text top-right of
+    one page — the same marker text_docling.txt/.md use, so a page in the
+    PDF can be matched back to its .md/text_docling.txt section by eye or by
+    copy-pasting straight out of a PDF viewer. Idempotent: skips pages that
+    already carry the label (re-running on an already-stamped PDF, or a page
+    _build_searchable_pdf already handled, is then a no-op here)."""
+    import fitz
 
-    Bboxes come from docling's item provenance (paragraph/table/heading level).
-    Both TOPLEFT and BOTTOMLEFT coordinate origins are handled.
+    label = f"=== Page {page_idx} ==="
+    if label in fitz_page.get_text():
+        return
+    label_fontsize = 9
+    label_width = fitz.get_text_length(label, fontsize=label_fontsize)
+    try:
+        fitz_page.insert_text(
+            fitz.Point(fitz_page.rect.width - label_width - 15, 25),
+            label, fontsize=label_fontsize, color=(0.2, 0.2, 0.2), overlay=True,
+        )
+    except Exception:
+        pass
+
+
+def _stamp_existing_pdf(pdf_path: Path, out_path: Path) -> None:
+    """Stamp page-number labels onto a PDF that already has its own text
+    layer (do_ocr: false — no fresh OCR pass to overlay, so
+    _build_searchable_pdf's per-item text placement doesn't apply here, only
+    the page label). Used for from_ocr_pdf backfill runs so an old *_ocr.pdf
+    ends up with the same top-right `=== Page N ===` marker a fresh run
+    would give it, without re-running Surya.
+
+    pdf_path and out_path are commonly the same file (backfilling in place)
+    — save to a sibling temp file and swap it in, since fitz can't safely
+    save a document over the same path it was opened from.
+    """
+    import fitz
+
+    src = fitz.open(str(pdf_path))
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    same_path = Path(pdf_path).resolve() == out_path.resolve()
+    save_path = out_path.with_suffix(out_path.suffix + ".tmp") if same_path else out_path
+
+    for page_idx in range(len(src)):
+        _stamp_page_label(src[page_idx], page_idx)
+
+    src.save(str(save_path))
+    src.close()
+    if same_path:
+        save_path.replace(out_path)
+
+
+def _build_searchable_pdf(
+    pdf_path: Path,
+    doc,
+    out_path: Path,
+    raw_cells: dict[int, list] | None = None,
+    fallback_pages: set[int] | None = None,
+) -> None:
+    """Overlay OCR text as an invisible layer on each page of the PDF.
+
+    Bboxes come from docling's item provenance (paragraph/table/heading
+    level) for ordinary pages. Both TOPLEFT and BOTTOMLEFT coordinate origins
+    are handled.
+
+    fallback_pages (optional): 0-indexed page numbers where
+    _build_page_results decided docling's assembled items dropped text Surya
+    actually read (typically a whole page misclassified as a Picture) and
+    used raw_cells instead. Without this, those pages got ZERO invisible
+    text here even though _build_page_results recovered their text for
+    text_docling.txt — this function only ever read doc.iterate_items(),
+    which is exactly what's empty/short on those pages. Same fallback here
+    keeps the two outputs consistent: a page's searchable-PDF text now always
+    matches what text_docling.txt says is on that page.
     """
     import fitz
     from docling_core.types.doc import CoordOrigin
 
     src = fitz.open(str(pdf_path))
+    raw_cells = raw_cells or {}
+    fallback_pages = fallback_pages or set()
 
     # Collect (text, bbox, page_idx) from all document items
     page_items: dict[int, list] = defaultdict(list)
@@ -362,6 +491,30 @@ def _build_searchable_pdf(pdf_path: Path, doc, out_path: Path) -> None:
     for page_idx in range(len(src)):
         fitz_page = src[page_idx]
         ph = fitz_page.rect.height  # page height in PDF points (for BOTTOMLEFT conversion)
+
+        _stamp_page_label(fitz_page, page_idx)
+
+        if page_idx in fallback_pages:
+            for cell in raw_cells.get(page_idx + 1, []):  # raw_cells is keyed 1-indexed
+                text = cell.text
+                if not text or not text.strip():
+                    continue
+                try:
+                    bbox = cell.rect.to_bounding_box()  # already TOPLEFT, page points
+                    x0, y0, x1, y1 = bbox.l, bbox.t, bbox.r, bbox.b
+                    if x1 <= x0 or y1 <= y0 or (y1 - y0) < 2:
+                        continue
+                    fontsize = max(4.0, (y1 - y0) * 0.8)
+                    fitz_page.insert_text(
+                        fitz.Point(x0, y1),
+                        text,
+                        fontsize=fontsize,
+                        render_mode=3,   # invisible text (Tr=3)
+                        color=(0, 0, 0),
+                    )
+                except Exception:
+                    continue
+            continue
 
         for text, bbox in page_items.get(page_idx, []):
             try:
@@ -440,7 +593,7 @@ def write_headings_json(txt_path: Path, out_dir: Path, document_name: str) -> Pa
     return out_path
 
 
-def _build_page_results(doc, raw_cells: dict[int, list] | None = None) -> tuple[list[dict], int]:
+def _build_page_results(doc, raw_cells: dict[int, list] | None = None) -> tuple[list[dict], int, set[int]]:
     """Convert a DoclingDocument to per-page result dicts.
 
     Heading items (TitleItem, SectionHeaderItem) are prefixed with the same
@@ -454,11 +607,23 @@ def _build_page_results(doc, raw_cells: dict[int, list] | None = None) -> tuple[
     text cell on that page from doc.iterate_items() even though Surya read it
     correctly. When that happens (the assembled text is shorter than what raw
     OCR actually captured), we fall back to the raw cells for that page so no
-    recognized text is lost. Returns (results, n_pages_recovered_via_fallback).
+    recognized text is lost. Returns (results, n_pages_recovered_via_fallback,
+    fallback_page_indices) — the last so _build_searchable_pdf (and the
+    per-page Markdown assembly below) can make the identical per-page choice
+    instead of re-deriving it independently.
+
+    Each result also carries md_text: real per-page Markdown from
+    doc.export_to_markdown(page_no=...) — table structure included — for
+    assembled pages, or the raw fallback text wrapped in a fenced code block
+    for fallback pages (so a reader can see at a glance which pages got real
+    structure recovery vs. a raw OCR dump). This is what <stem>.md is built
+    from, so it has the same fallback coverage as text_docling.txt instead
+    of silently losing the same ~80%-of-pages content docling's assembled
+    path alone loses on handwriting-heavy corpora.
     """
     from docling_core.types.doc import SectionHeaderItem, TitleItem
 
-    page_texts: dict[int, list[str]] = defaultdict(list)
+    page_texts: dict[int, list[tuple[str, object]]] = defaultdict(list)
 
     for item, _level in doc.iterate_items():
         text = getattr(item, "text", None)
@@ -466,6 +631,7 @@ def _build_page_results(doc, raw_cells: dict[int, list] | None = None) -> tuple[
             continue
         prov = getattr(item, "prov", None)
         page_no = (prov[0].page_no - 1) if prov else 0  # 0-indexed
+        bbox = prov[0].bbox if prov else None
 
         if isinstance(item, TitleItem):
             text = f"# {text}"
@@ -474,43 +640,54 @@ def _build_page_results(doc, raw_cells: dict[int, list] | None = None) -> tuple[
             num_hashes = min(item.level + 1, 6)
             text = f"{'#' * num_hashes} {text}"
 
-        page_texts[page_no].append(text)
+        page_texts[page_no].append((text, bbox))
 
     raw_cells = raw_cells or {}
     max_raw_page_index = max((pn - 1 for pn in raw_cells), default=-1)
     if not page_texts and max_raw_page_index < 0:
-        return [], 0
+        return [], 0, set()
 
     n_pages = max(max(page_texts.keys(), default=-1), max_raw_page_index) + 1
 
     results = []
     n_recovered = 0
+    fallback_page_indices: set[int] = set()
     for i in range(n_pages):
-        assembled_lines = page_texts.get(i, [])
-        assembled_text = "\n".join(assembled_lines)
+        assembled_items = page_texts.get(i, [])
+        assembled_text = "\n".join(t for t, _ in assembled_items)
 
         cells = raw_cells.get(i + 1)  # raw_cells is keyed 1-indexed
         if cells:
             fallback_text = _cells_reading_order_text(cells)
             if len(fallback_text.strip()) > len(assembled_text.strip()):
                 n_recovered += 1
+                fallback_page_indices.add(i)
                 results.append({
                     "page_index": i,
                     "image_path": "",
                     "text_lines": [
-                        {"text": c.text, "confidence": c.confidence, "bbox": []}
+                        {"text": c.text, "confidence": c.confidence,
+                         "bbox": _bbox_to_dict(c.rect.to_bounding_box())}
                         for c in sorted(cells, key=lambda c: (round(c.rect.to_bounding_box().t / 15.0), c.rect.to_bounding_box().l))
                         if c.text and c.text.strip()
                     ],
                     "full_text": fallback_text,
+                    "md_text": (
+                        "*Raw OCR text — Docling's layout model did not recover "
+                        "this page's structure.*\n\n```\n" + fallback_text + "\n```"
+                    ),
                 })
                 continue
 
         results.append({
             "page_index": i,
             "image_path": "",
-            "text_lines": [{"text": t, "confidence": 1.0, "bbox": []} for t in assembled_lines],
+            "md_text": doc.export_to_markdown(page_no=i + 1),
+            "text_lines": [
+                {"text": t, "confidence": 1.0, "bbox": _bbox_to_dict(b)}
+                for t, b in assembled_items
+            ],
             "full_text": assembled_text,
         })
 
-    return results, n_recovered
+    return results, n_recovered, fallback_page_indices

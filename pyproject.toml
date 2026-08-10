@@ -8,4 +8,22 @@ dependencies = [
     "docling",
     "surya-ocr",
     "transformers>=4.56.1,<5.0.0",
+    "torch",
+    "torchvision",
+    "rapidfuzz",
 ]
+
+# Pin torch/torchvision to the CUDA build. Without this, `uv sync`/`uv run`
+# resolve them to the default CPU wheel from PyPI (surya-ocr/docling only
+# require *a* torch, not a specific build) and silently revert any
+# manually-installed GPU torch back to CPU on the next sync — which is
+# exactly what happened once already and made a from-scratch corpus OCR
+# rerun run 10-20x slower than it should without any visible error.
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }
+torchvision = { index = "pytorch-cu128" }
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true

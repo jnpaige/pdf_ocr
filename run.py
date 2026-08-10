@@ -130,15 +130,28 @@ def _merge_searchable_pdfs(chunk_ocr_pdfs: list[Path], out_path: Path) -> None:
     merged.close()
 
 
-def _load_chunk_results(chunk_out: Path) -> list[dict] | None:
-    """Return saved results for a chunk if it completed previously, else None."""
+def _load_chunk_results(chunk_out: Path, force_reprocess: bool) -> list[dict] | None:
+    """Return saved results for a chunk if it completed previously, else None.
+
+    This cache exists so a crashed run can resume mid-document without
+    redoing already-completed chunks — that's independent of skip_existing
+    (which only gates whether a fully-completed document is reprocessed at
+    all) and should keep working normally regardless of it. force_reprocess
+    is the deliberate override for "the OCR code itself changed, so even a
+    previously-cached chunk needs to actually re-run" — without it, a config
+    change like skip_existing: false intended to force a full corpus
+    reprocess would silently keep serving every already-chunked document's
+    stale per-chunk results instead.
+    """
+    if force_reprocess:
+        return None
     results_path = chunk_out / "ocr_docling.json"
     if results_path.exists():
         return json.loads(results_path.read_text(encoding="utf-8"))
     return None
 
 
-def process_pdf_chunked(pdf_path: Path, cfg: dict, chunk_size: int):
+def process_pdf_chunked(pdf_path: Path, cfg: dict, chunk_size: int, converter):
     from ocr_docling import run_ocr
 
     stem = _report_stem(pdf_path)
@@ -156,24 +169,24 @@ def process_pdf_chunked(pdf_path: Path, cfg: dict, chunk_size: int):
     chunk_docling_cfg = {k: v for k, v in cfg.get("docling", {}).items() if k != "markdown_dir"}
 
     all_results: list[dict] = []
-    chunk_mds: list[str] = []
     chunk_ocr_pdfs: list[Path] = []
     do_ocr = cfg.get("docling", {}).get("do_ocr", True)
+    force_reprocess = cfg.get("force_reprocess", False)
 
     for chunk_path, start_page in chunks:
         chunk_stem = chunk_path.stem
         chunk_out = tmp_dir / chunk_stem
         chunk_out.mkdir(exist_ok=True)
 
-        # Resume: skip chunks that already finished
-        cached = _load_chunk_results(chunk_out)
+        # Resume: skip chunks that already finished (unless force_reprocess)
+        cached = _load_chunk_results(chunk_out, force_reprocess)
         if cached is not None:
             print(f"  Resuming — chunk {chunk_stem} already done, loading cached results")
             chunk_results = cached
         else:
             end_page = start_page + chunk_size - 1
             print(f"  Processing pages {start_page}–{end_page} ({chunk_stem})...")
-            chunk_results = run_ocr(chunk_path, chunk_out, docling_cfg=chunk_docling_cfg)
+            chunk_results = run_ocr(chunk_path, chunk_out, docling_cfg=chunk_docling_cfg, converter=converter)
             # Cache chunk results so a future resume can skip this chunk
             (chunk_out / "ocr_docling.json").write_text(
                 json.dumps(chunk_results, indent=2, ensure_ascii=False), encoding="utf-8"
@@ -183,10 +196,6 @@ def process_pdf_chunked(pdf_path: Path, cfg: dict, chunk_size: int):
         for r in chunk_results:
             r["page_index"] += start_page
         all_results.extend(chunk_results)
-
-        chunk_md = chunk_out / f"{chunk_stem}.md"
-        if chunk_md.exists():
-            chunk_mds.append(chunk_md.read_text(encoding="utf-8"))
 
         chunk_ocr_pdfs.append(chunk_out / f"{chunk_stem}_ocr.pdf")
 
@@ -199,8 +208,11 @@ def process_pdf_chunked(pdf_path: Path, cfg: dict, chunk_size: int):
     sections = [f"=== Page {r['page_index']} ===\n{r['full_text']}" for r in all_results]
     text_path.write_text("\n\n".join(sections), encoding="utf-8")
 
-    # --- Merge markdown ---
-    md_content = "\n\n".join(chunk_mds)
+    # --- Merge markdown --- (same page_index-offset pattern as text_docling.txt,
+    # not a re-read/concat of each chunk's own .md — that would carry each
+    # chunk's LOCAL page numbers instead of the corpus-global ones)
+    md_sections = [f"=== Page {r['page_index']} ===\n{r['md_text']}" for r in all_results]
+    md_content = "\n\n".join(md_sections)
     md_path = out_dir / f"{stem}.md"
     md_path.write_text(md_content, encoding="utf-8")
 
@@ -225,7 +237,7 @@ def process_pdf_chunked(pdf_path: Path, cfg: dict, chunk_size: int):
 # Single-PDF processing (unchanged path for small PDFs)
 # ---------------------------------------------------------------------------
 
-def process_pdf(pdf_path: Path, cfg: dict):
+def process_pdf(pdf_path: Path, cfg: dict, converter):
     chunk_size = cfg.get("chunk_size")
     if chunk_size:
         import fitz
@@ -234,7 +246,7 @@ def process_pdf(pdf_path: Path, cfg: dict):
         src.close()
         if n_pages > chunk_size:
             print(f"  PDF has {n_pages} pages — chunking into {chunk_size}-page pieces")
-            process_pdf_chunked(pdf_path, cfg, chunk_size)
+            process_pdf_chunked(pdf_path, cfg, chunk_size, converter)
             return
 
     stem = _report_stem(pdf_path)
@@ -244,7 +256,7 @@ def process_pdf(pdf_path: Path, cfg: dict):
     print(f"\n[{pdf_path.name}]  →  {out_dir}")
 
     from ocr_docling import run_ocr
-    results = run_ocr(pdf_path, out_dir, docling_cfg=cfg.get("docling", {}), stem=stem)
+    results = run_ocr(pdf_path, out_dir, docling_cfg=cfg.get("docling", {}), stem=stem, converter=converter)
 
     ocr_path = out_dir / "ocr_docling.json"
     ocr_path.write_text(json.dumps(results, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -295,7 +307,10 @@ def main():
     if file_list and not Path(file_list).is_absolute():
         # Resolve relative to the config file's directory
         file_list = str((Path(args.config).parent / file_list).resolve())
-    skip_existing = cfg.get("skip_existing", False)
+    # force_reprocess always wins over skip_existing — it means "the OCR code
+    # changed, redo everything," which is a stronger claim than "don't skip
+    # already-done documents" and should override it if both are set.
+    skip_existing = cfg.get("skip_existing", False) and not cfg.get("force_reprocess", False)
     from_ocr_pdf = cfg.get("from_ocr_pdf", False)
 
     pdfs = collect_pdfs(cfg["pdf_input"], start_from=start_from, file_list=file_list, from_ocr_pdf=from_ocr_pdf)
@@ -314,8 +329,14 @@ def main():
         if skipped:
             print(f"Skipping {skipped} already-completed PDF(s); {len(pdfs)} remaining")
 
+    # Built once and reused for every PDF in this run — see build_converter's
+    # docstring for why rebuilding it per-PDF caused memory growth on large
+    # corpus runs.
+    from ocr_docling import build_converter
+    converter = build_converter(cfg.get("docling", {}))
+
     for pdf_path in pdfs:
-        process_pdf(pdf_path, cfg)
+        process_pdf(pdf_path, cfg, converter)
 
     print("\nAll done.")
 
