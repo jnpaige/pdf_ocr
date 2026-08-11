@@ -252,6 +252,7 @@ def run_ocr(
     docling_cfg: dict | None = None,
     stem: str | None = None,
     converter=None,
+    stamp_page_labels: bool = True,
 ) -> list[dict]:
     """Run Docling + Surya on a PDF. Saves <stem>.md to out_dir.
 
@@ -262,6 +263,13 @@ def run_ocr(
     Reused across many run_ocr() calls in one process instead of rebuilt per
     call — pass the same instance across a whole corpus run. Only built
     on-demand here (once) if omitted, for callers that just want one PDF done.
+
+    stamp_page_labels: set False when this call is producing one chunk of a
+    larger document that will be merged later (see run.py's
+    process_pdf_chunked) — a chunk's own page 0 is NOT the merged document's
+    page 0, so stamping here would bake in the wrong, chunk-local number.
+    The merge step stamps the correct global page index once, after all
+    chunks are concatenated, instead.
 
     Returns per-page result dicts with keys:
       page_index, image_path, text_lines, full_text, md_text
@@ -310,15 +318,17 @@ def run_ocr(
     pdf_out = out_dir / f"{stem}_ocr.pdf"
     if do_ocr:
         _build_searchable_pdf(pdf_path, doc, pdf_out,
-                               raw_cells=_raw_ocr_cells_by_page, fallback_pages=fallback_pages)
+                               raw_cells=_raw_ocr_cells_by_page, fallback_pages=fallback_pages,
+                               stamp_page_labels=stamp_page_labels)
         print(f"  Saved searchable PDF → {pdf_out.name}")
     else:
         # do_ocr: false means pdf_path already carries its own text layer (a
         # prior run's *_ocr.pdf, in from_ocr_pdf backfill mode) — there's no
         # fresh OCR pass to overlay, so _build_searchable_pdf doesn't apply.
         # Still stamp the `=== Page N ===` label so backfilled documents end
-        # up matching fresh ones instead of permanently missing it.
-        _stamp_existing_pdf(pdf_path, pdf_out)
+        # up matching fresh ones instead of permanently missing it (unless
+        # this is one chunk of a larger document — see stamp_page_labels).
+        _stamp_existing_pdf(pdf_path, pdf_out, stamp=stamp_page_labels)
         print(f"  Stamped page labels → {pdf_out.name} (do_ocr: false — reused existing text layer)")
 
     # Write headings.json alongside the other outputs
@@ -396,7 +406,20 @@ def _stamp_page_label(fitz_page, page_idx: int) -> None:
     PDF can be matched back to its .md/text_docling.txt section by eye or by
     copy-pasting straight out of a PDF viewer. Idempotent: skips pages that
     already carry the label (re-running on an already-stamped PDF, or a page
-    _build_searchable_pdf already handled, is then a no-op here)."""
+    _build_searchable_pdf already handled, is then a no-op here).
+
+    Landscape tables in reports are commonly stored as a portrait page with
+    a /Rotate 90 flag rather than actually-landscape page geometry.
+    insert_text positions and draws glyphs in the page's raw (unrotated)
+    coordinate system — it does not know about /Rotate — while `page.rect`
+    reports the as-displayed (rotated) width/height. Using rect.width/height
+    directly here silently placed the stamp entirely outside the visible
+    page on any rotated page (found no exception, no stamp — just missing).
+    derotation_matrix converts our desired on-screen top-right point into
+    the correct raw coordinates, and rotate=page.rotation draws the glyphs
+    so they still read upright in the rotated display. Both are identity /
+    no-ops on the common unrotated case, so this is unconditionally safe.
+    """
     import fitz
 
     label = f"=== Page {page_idx} ==="
@@ -404,22 +427,29 @@ def _stamp_page_label(fitz_page, page_idx: int) -> None:
         return
     label_fontsize = 9
     label_width = fitz.get_text_length(label, fontsize=label_fontsize)
+    pt_display = fitz.Point(fitz_page.rect.width - label_width - 15, 25)
+    pt_raw = pt_display * fitz_page.derotation_matrix
     try:
         fitz_page.insert_text(
-            fitz.Point(fitz_page.rect.width - label_width - 15, 25),
-            label, fontsize=label_fontsize, color=(0.2, 0.2, 0.2), overlay=True,
+            pt_raw, label, fontsize=label_fontsize, color=(0.2, 0.2, 0.2),
+            overlay=True, rotate=fitz_page.rotation,
         )
     except Exception:
         pass
 
 
-def _stamp_existing_pdf(pdf_path: Path, out_path: Path) -> None:
+def _stamp_existing_pdf(pdf_path: Path, out_path: Path, stamp: bool = True) -> None:
     """Stamp page-number labels onto a PDF that already has its own text
     layer (do_ocr: false — no fresh OCR pass to overlay, so
     _build_searchable_pdf's per-item text placement doesn't apply here, only
     the page label). Used for from_ocr_pdf backfill runs so an old *_ocr.pdf
     ends up with the same top-right `=== Page N ===` marker a fresh run
     would give it, without re-running Surya.
+
+    stamp=False still copies pdf_path to out_path but skips labeling — used
+    when this is one chunk of a larger document (see run_ocr's
+    stamp_page_labels), where a chunk's own local page 0 isn't the merged
+    document's page 0.
 
     pdf_path and out_path are commonly the same file (backfilling in place)
     — save to a sibling temp file and swap it in, since fitz can't safely
@@ -432,8 +462,9 @@ def _stamp_existing_pdf(pdf_path: Path, out_path: Path) -> None:
     same_path = Path(pdf_path).resolve() == out_path.resolve()
     save_path = out_path.with_suffix(out_path.suffix + ".tmp") if same_path else out_path
 
-    for page_idx in range(len(src)):
-        _stamp_page_label(src[page_idx], page_idx)
+    if stamp:
+        for page_idx in range(len(src)):
+            _stamp_page_label(src[page_idx], page_idx)
 
     src.save(str(save_path))
     src.close()
@@ -447,12 +478,17 @@ def _build_searchable_pdf(
     out_path: Path,
     raw_cells: dict[int, list] | None = None,
     fallback_pages: set[int] | None = None,
+    stamp_page_labels: bool = True,
 ) -> None:
     """Overlay OCR text as an invisible layer on each page of the PDF.
 
     Bboxes come from docling's item provenance (paragraph/table/heading
     level) for ordinary pages. Both TOPLEFT and BOTTOMLEFT coordinate origins
     are handled.
+
+    stamp_page_labels=False skips the visible `=== Page N ===` stamp — used
+    when this is one chunk of a larger document (see run_ocr's docstring);
+    the merge step stamps the correct global page index afterward instead.
 
     fallback_pages (optional): 0-indexed page numbers where
     _build_page_results decided docling's assembled items dropped text Surya
@@ -492,7 +528,8 @@ def _build_searchable_pdf(
         fitz_page = src[page_idx]
         ph = fitz_page.rect.height  # page height in PDF points (for BOTTOMLEFT conversion)
 
-        _stamp_page_label(fitz_page, page_idx)
+        if stamp_page_labels:
+            _stamp_page_label(fitz_page, page_idx)
 
         if page_idx in fallback_pages:
             for cell in raw_cells.get(page_idx + 1, []):  # raw_cells is keyed 1-indexed

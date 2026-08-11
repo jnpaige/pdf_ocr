@@ -1,0 +1,6 @@
+pdf_input:  'C:\Users\jpaige\Desktop\local_repositories\Phase II Reports\Phase II Reports\Calcasieu_Vernon'
+output_dir: 'C:\Users\jpaige\Desktop\local_repositories\Phase_II_Reports_ocr_docling_v2\Calcasieu_Vernon'
+
+skip_existing: true
+chunk_size: 50
+force_reprocess: true

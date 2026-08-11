@@ -119,6 +119,7 @@ def _split_pdf(pdf_path: Path, chunk_size: int, tmp_dir: Path) -> list[tuple[Pat
 
 def _merge_searchable_pdfs(chunk_ocr_pdfs: list[Path], out_path: Path) -> None:
     import fitz
+    from ocr_docling import _stamp_page_label
 
     merged = fitz.open()
     for cp in chunk_ocr_pdfs:
@@ -126,6 +127,14 @@ def _merge_searchable_pdfs(chunk_ocr_pdfs: list[Path], out_path: Path) -> None:
             sub = fitz.open(str(cp))
             merged.insert_pdf(sub)
             sub.close()
+
+    # Each chunk was built with stamp_page_labels=False (its own page 0 isn't
+    # the merged document's page 0), so stamp the real global page index now
+    # that every chunk is concatenated into one page sequence — matching what
+    # text_docling.txt/.md already use for this document.
+    for page_idx in range(len(merged)):
+        _stamp_page_label(merged[page_idx], page_idx)
+
     merged.save(str(out_path))
     merged.close()
 
@@ -186,7 +195,8 @@ def process_pdf_chunked(pdf_path: Path, cfg: dict, chunk_size: int, converter):
         else:
             end_page = start_page + chunk_size - 1
             print(f"  Processing pages {start_page}–{end_page} ({chunk_stem})...")
-            chunk_results = run_ocr(chunk_path, chunk_out, docling_cfg=chunk_docling_cfg, converter=converter)
+            chunk_results = run_ocr(chunk_path, chunk_out, docling_cfg=chunk_docling_cfg, converter=converter,
+                                     stamp_page_labels=False)
             # Cache chunk results so a future resume can skip this chunk
             (chunk_out / "ocr_docling.json").write_text(
                 json.dumps(chunk_results, indent=2, ensure_ascii=False), encoding="utf-8"
