@@ -116,16 +116,43 @@ uv run python run.py --config path/to/config.yaml
 
 ## Configuration
 
+`config.example.yaml` in the repo root is an annotated reference covering every setting, with the values used for the 2026-08 corpus runs (2024 site forms, Phase II reports, GLO survey field notes). Copy it to `config.yaml` and edit. Only `pdf_input` and `output_dir` are required.
+
 ```yaml
 pdf_input:  'C:\path\to\pdfs'     # single PDF or directory of PDFs
 output_dir: 'C:\path\to\output'   # subfolders created per PDF
 
+chunk_size: 50                    # split PDFs longer than this; see below
+
 docling:
+  do_ocr: true                    # run Surya OCR (default)
   # markdown_dir: 'C:\path\to\md' # optional: all .md files mirrored here (flat)
-  # do_ocr: false                 # optional: skip Surya OCR (see below)
 ```
 
-When `markdown_dir` is set, every `.md` file is also written to that directory with a flat layout — no subfolders. This is useful for pointing a vector store or RAG indexer at a single location. Set `do_ocr: false` when the input PDFs already have an embedded text layer, such as `_ocr.pdf` outputs from a previous run of this pipeline. Docling parses the existing text layer instead of running Surya, and the `_ocr.pdf` is not re-written.
+| Setting | Default | Purpose |
+|---|---|---|
+| `pdf_input` | — | A single `.pdf`, or a directory of them (non-recursive) |
+| `output_dir` | — | One subfolder per PDF, named after its stem |
+| `chunk_size` | unset | Split PDFs longer than N pages, OCR each piece, merge results |
+| `skip_existing` | `false` | Skip PDFs whose output already has `ocr_docling.json` |
+| `force_reprocess` | `false` | Redo everything; overrides `skip_existing` if both are set |
+| `start_from` | unset | Skip stems sorting before this value (also `--start-from`) |
+| `file_list` | unset | Process only the PDFs named in this file (also `--file-list`) |
+| `from_ocr_pdf` | `false` | Read `<name>/<name>_ocr.pdf` from subfolders instead of `*.pdf` |
+| `docling.do_ocr` | `true` | Run Surya OCR over page imagery |
+| `docling.markdown_dir` | unset | Mirror every `.md` into one flat directory |
+| `docling.extract_figures` | `false` | Extract embedded figures as images |
+| `docling.figures_scale` | `2.0` | Resolution multiplier for extracted figures |
+| `docling.classify_figures` | `false` | Run Docling's picture classifier |
+| `docling.picture_description_model` | unset | Caption figures with a local vision model via Ollama |
+
+**Chunking.** `chunk_size: 50` is what the 2026-08 runs used. It applies only to documents that exceed it, so one value is safe across a mixed corpus — 2–15 page site forms never chunk, while 185-page Phase II reports and 380-page GLO volumes split into 4 and 8 pieces respectively. Page numbering stays continuous across chunk boundaries, so `=== Page N ===` markers still match the original document; intermediate pieces are kept in a `_chunks/` subfolder. Without it, a long document is one slow pass that loses everything if it crashes.
+
+**Flat markdown.** When `markdown_dir` is set, every `.md` is also written there with no subfolders — useful for pointing a vector store or RAG indexer at a single location.
+
+**Reading an existing text layer.** Set `do_ocr: false` when the input PDFs already carry one, such as `_ocr.pdf` outputs from a previous run of this pipeline (usually paired with `from_ocr_pdf: true`). Docling parses that layer instead of running Surya, and no new `_ocr.pdf` is written. This is much cheaper but **not equivalent**: re-parsing an existing text layer has produced character-interleaved corruption in `text_docling.txt` (`"Site Name Site Name"`) on a corpus where a fresh `do_ocr: true` pass was clean. Since `text_docling.txt` is what every downstream tool treats as ground truth, spot-check the actual text against a known-good baseline rather than only confirming the expected files and fields exist.
+
+One YAML gotcha: `docling:` with all sub-keys commented out parses as null rather than an empty mapping, which crashes on startup. Keep at least one sub-key live — `do_ocr: true` states the default explicitly and is the simplest choice.
 
 ## Dependencies
 

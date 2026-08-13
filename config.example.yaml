@@ -1,0 +1,101 @@
+# ---------------------------------------------------------------------------
+# config.example.yaml — annotated reference for every setting run.py reads.
+# ---------------------------------------------------------------------------
+# Copy to config.yaml and edit. run.py uses ./config.yaml by default, or
+# any path passed with --config:
+#
+#   uv run python run.py
+#   uv run python run.py --config path/to/config.yaml
+#
+# The values below match the settings used for the 2026-08 corpus runs
+# (2024 site forms, Phase II reports, GLO survey field notes). Only
+# pdf_input and output_dir are required; everything else has a default and
+# is shown here commented with that default called out.
+# ---------------------------------------------------------------------------
+
+# --- Required ---------------------------------------------------------------
+
+# A single .pdf, or a directory of .pdf files (non-recursive).
+pdf_input:  'C:\path\to\pdfs'
+
+# One subfolder per input PDF is created here, named after the PDF stem,
+# containing: <stem>.md, <stem>_ocr.pdf, ocr_docling.json, text_docling.txt.
+output_dir: 'C:\path\to\output'
+
+
+# --- Chunking ---------------------------------------------------------------
+
+# Split PDFs longer than this into N-page pieces, OCR each, then merge the
+# results back into one set of output files.
+# Intermediate pieces are kept in a `_chunks/` subfolder.
+
+chunk_size: 50
+
+
+# --- Resuming and re-running ------------------------------------------------
+
+# Skip any PDF whose output folder already has ocr_docling.json. Use when
+# resuming an interrupted corpus run. Default: false.
+# skip_existing: true
+
+# Redo everything even if outputs exist. Means "the OCR code changed" and
+# deliberately overrides skip_existing if both are set. Default: false.
+# force_reprocess: true
+
+# Skip PDFs whose stem sorts before this value, case-insensitively. Another
+# way to resume. Also available as --start-from. Default: unset.
+# start_from: '16RA1717'
+
+# Process only the PDFs named in this text file, one filename or stem per
+# line. Overrides start_from. A relative path resolves against the config
+# file's own directory. Also available as --file-list. Default: unset.
+# file_list: 'file_lists/rerun_batch.txt'
+
+
+# --- Docling / Surya --------------------------------------------------------
+
+docling:
+  # Run Surya OCR over page imagery. Default: true, which is what every
+  # 2026-08 run used.
+  #
+  # Set false ONLY when the input PDFs already carry a useful text layer —
+  # e.g. _ocr.pdf outputs from a previous run of this pipeline. Docling then
+  # parses that existing layer instead, and no new _ocr.pdf is written.
+
+  do_ocr: true
+
+  # Mirror every .md into one flat directory as well as the per-PDF
+  # subfolders — convenient for pointing a vector store or RAG indexer at a
+  # single location. Default: unset (no mirror).
+  # markdown_dir: 'C:\path\to\flat_markdown'
+
+  # --- Figures (off by default; none of the 2026-08 runs used these) ---
+
+  # Extract embedded figures as image files. Default: false.
+  # extract_figures: true
+
+  # Resolution multiplier for extracted figures. Default: 2.0.
+  # figures_scale: 2.0
+
+  # Run Docling's picture classifier over extracted figures. Default: false.
+  # classify_figures: true
+
+  # Generate captions for extracted figures with a local vision model served
+  # by Ollama. Unset means no captioning. See also the figure_captioner repo,
+  # which does this as a separate pass over finished OCR output.
+  # picture_description_model: 'llama3.2-vision:11b'
+  # picture_description_base_url: 'http://localhost:11434'
+  # picture_description_prompt: 'Describe this figure in two sentences.'
+  # picture_description_timeout: 120
+
+
+# --- Backfill mode ----------------------------------------------------------
+
+# Instead of reading *.pdf from pdf_input, walk one level of subfolders and
+# take each <name>/<name>_ocr.pdf — i.e. re-process this pipeline's own
+# previous output. The "_ocr" suffix is stripped to recover the original
+# stem, so output folder names stay stable. Normally paired with
+# docling.do_ocr: false (read the existing text layer rather than
+# re-OCRing) — read the do_ocr caution above before relying on it.
+# Default: false.
+# from_ocr_pdf: true
