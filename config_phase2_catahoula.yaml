@@ -1,6 +1,0 @@
-pdf_input:  'C:\Users\jpaige\Desktop\local_repositories\Phase II Reports\Phase II Reports\Catahoula'
-output_dir: 'C:\Users\jpaige\Desktop\local_repositories\Phase_II_Reports_ocr_docling_v2\Catahoula'
-
-skip_existing: true
-chunk_size: 50
-force_reprocess: true

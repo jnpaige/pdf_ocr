@@ -1,7 +1,0 @@
-# Fresh full-OCR test on the same 5 pilot trinomials, from their true
-# original (never-OCR'd) source PDFs — checks whether the duplicate-item
-# bug found in the 2026-05-15 backfilled output (do_ocr:false re-parse of
-# an already-duplicated invisible text layer) also occurs on a clean
-# do_ocr:true Surya+Docling run, or was specific to the backfill path.
-pdf_input:  'C:\Users\jpaige\Desktop\local_repositories\2024_forms_fresh_pilot_input'
-output_dir: 'C:\Users\jpaige\Desktop\local_repositories\2024_forms_ocr_docling_fresh_pilot'
