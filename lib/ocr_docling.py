@@ -186,6 +186,42 @@ class SuryaPdfPipeline(StandardPdfPipeline):
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
+_REMOTE_PICTURE_DESCRIPTION_KEYS = (
+    "picture_description_model",
+    "picture_description_base_url",
+    "picture_description_prompt",
+    "picture_description_timeout",
+)
+
+
+def _reject_remote_picture_description(docling_cfg: dict) -> None:
+    """Fail on any leftover picture-description config key.
+
+    Docling's picture-description stage POSTs each extracted figure image to
+    a configurable HTTP endpoint. To help meet broad data security
+    requirements across domains, that path is walled off here rather than
+    left wired up behind a local-looking default — a default is only a
+    default, and the key that overrides it gives no sign of what changes
+    when it does.
+
+    Figure captioning is done instead by the separate figure_captioner pass,
+    which runs a local model over already-extracted figure files.
+
+    Fails on the keys rather than ignoring them, so an older config surfaces
+    as an error at startup instead of quietly producing uncaptioned output
+    that looks like a model problem.
+    """
+    present = [k for k in _REMOTE_PICTURE_DESCRIPTION_KEYS if k in docling_cfg]
+    if present:
+        raise ValueError(
+            "Unsupported docling config key(s): " + ", ".join(present) + "\n"
+            "Docling's built-in picture description sends figure image data to "
+            "an outside server, so it is walled off in this pipeline. Remove "
+            "these keys; caption figures with the figure_captioner repo, which "
+            "uses a model running on this machine."
+        )
+
+
 def build_converter(docling_cfg: dict | None = None):
     """Build a Docling DocumentConverter configured for the Surya OCR pipeline.
 
@@ -202,39 +238,29 @@ def build_converter(docling_cfg: dict | None = None):
     """
     from docling.document_converter import DocumentConverter, PdfFormatOption
     from docling.datamodel.base_models import InputFormat
-    from docling.datamodel.pipeline_options import PdfPipelineOptions, PictureDescriptionApiOptions
+    from docling.datamodel.pipeline_options import PdfPipelineOptions
 
     if docling_cfg is None:
         docling_cfg = {}
 
+    _reject_remote_picture_description(docling_cfg)
+
     do_ocr = docling_cfg.get("do_ocr", True)
     extract_figures = docling_cfg.get("extract_figures", False)
-    picture_description_model = docling_cfg.get("picture_description_model")
 
     pipeline_options = PdfPipelineOptions()
     pipeline_options.do_ocr = do_ocr
+
+    # Left at its default (False). Docling gates every pipeline stage that
+    # calls out of the process behind this one flag, so it stays off here and
+    # nothing in this repo turns it on — see
+    # _reject_remote_picture_description.
+    pipeline_options.enable_remote_services = False
 
     if extract_figures:
         pipeline_options.generate_picture_images = True
         pipeline_options.images_scale = docling_cfg.get("figures_scale", 2.0)
         pipeline_options.do_picture_classification = docling_cfg.get("classify_figures", False)
-
-    if picture_description_model:
-        pipeline_options.enable_remote_services = True
-        pipeline_options.do_picture_description = True
-        pipeline_options.picture_description_options = PictureDescriptionApiOptions(
-            url=docling_cfg.get("picture_description_base_url", "http://localhost:11434") + "/v1/chat/completions",
-            params={"model": picture_description_model},
-            prompt=docling_cfg.get(
-                "picture_description_prompt",
-                "Describe this figure from an archaeology report in 1-3 sentences. "
-                "If it shows a lithic artifact, note the artifact type, reduction "
-                "technique, or technological features visible (e.g. platform, "
-                "bulb of percussion, retouch, cortex). If it is a map, chart, or "
-                "photo of a site or excavation, say so plainly instead.",
-            ),
-            timeout=docling_cfg.get("picture_description_timeout", 120),
-        )
 
     return DocumentConverter(
         format_options={
@@ -279,9 +305,10 @@ def run_ocr(
     if stem is None:
         stem = pdf_path.stem
 
+    _reject_remote_picture_description(docling_cfg)
+
     do_ocr = docling_cfg.get("do_ocr", True)
     extract_figures = docling_cfg.get("extract_figures", False)
-    picture_description_model = docling_cfg.get("picture_description_model")
 
     if converter is None:
         converter = build_converter(docling_cfg)
@@ -338,17 +365,21 @@ def run_ocr(
         print(f"  Saved headings    → {h_path.name}  ({_count_headings(h_path)} headings)")
 
     if extract_figures:
-        n_figs = _extract_figures(doc, out_dir, captioned=bool(picture_description_model))
+        n_figs = _extract_figures(doc, out_dir)
         print(f"  Saved figures     → figures/  ({n_figs} figure(s))")
 
     return results
 
 
-def _extract_figures(doc, out_dir: Path, captioned: bool = False) -> int:
+def _extract_figures(doc, out_dir: Path) -> int:
     """Save each detected picture/figure as a PNG under <out_dir>/figures/, plus
-    a figures.json manifest recording page, bbox, classification (if enabled),
-    and VLM caption (if picture_description_model was set). Returns the count
-    of figures saved.
+    a figures.json manifest recording page, bbox, and classification (if
+    enabled). Returns the count of figures saved.
+
+    No caption field: figure_captioner is the captioning pass, and it writes
+    its own <model_slug>__<figure_stem>.caption.json next to these files
+    rather than editing this manifest, so nothing downstream reads a caption
+    from here.
     """
     import json
 
@@ -378,10 +409,6 @@ def _extract_figures(doc, out_dir: Path, captioned: bool = False) -> int:
         if classification is not None:
             pred = classification.get_main_prediction()
             entry["classification"] = pred.class_name
-
-        if captioned:
-            description = getattr(pic.meta, "description", None) if pic.meta else None
-            entry["caption"] = description.text if description else None
 
         manifest.append(entry)
 

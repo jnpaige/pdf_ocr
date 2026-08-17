@@ -80,13 +80,12 @@ docling:
   # Run Docling's picture classifier over extracted figures. Default: false.
   # classify_figures: true
 
-  # Generate captions for extracted figures with a local vision model served
-  # by Ollama. Unset means no captioning. See also the figure_captioner repo,
-  # which does this as a separate pass over finished OCR output.
-  # picture_description_model: 'llama3.2-vision:11b'
-  # picture_description_base_url: 'http://localhost:11434'
-  # picture_description_prompt: 'Describe this figure in two sentences.'
-  # picture_description_timeout: 120
+  # Figure captioning is not configurable here. Docling's built-in
+  # picture-description stage sends figure image data to an outside server,
+  # so it is walled off in this pipeline and the config keys for it are
+  # rejected at startup. Caption figures with the figure_captioner repo
+  # instead — a separate pass over finished OCR output, using a model
+  # running on this machine.
 
 
 # --- Backfill mode ----------------------------------------------------------

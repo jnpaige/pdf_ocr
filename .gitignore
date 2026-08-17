@@ -1,8 +1,143 @@
-__pycache__/
-*.pyc
-.venv/
-*.log
-.pytest_cache/
-*.egg-info/
+# This repo has a public remote, and the pipeline it belongs to handles site
+# forms whose locational data is legally restricted. So the policy is
+# deny-by-default for anything data-shaped: code, config, and docs are tracked,
+# research material never is. Committing data should take a deliberate act
+# rather than remembering to add a rule.
+#
+# Need to commit something matched below? `git add -f <path>` — after checking
+# that it really carries no site data.
+#
+# Note: .gitignore only governs *untracked* files. If something sensitive is
+# already tracked, `git rm --cached <path>` first, and rewrite history if it has
+# been pushed.
 
+# --- Environment, caches, build artifacts ----------------------------------
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# --- This tool's own output ------------------------------------------------
+# One folder per PDF, each holding the OCR'd text, markdown, and searchable
+# PDF for a document in the corpus.
+runs/
+output/
+out/
+*_ocr/
+_chunks/
+
+# File lists name the documents in a batch by stem — those stems are site
+# identifiers, so a rerun list is corpus data even though it is plain text.
+file_lists/
+
+# --- Documents and scans ---------------------------------------------------
+# Input PDFs, extracted figures, and pasted-in screenshots. Screenshots are the
+# usual way a page of a form reaches a repo by accident.
+*.pdf
+*.doc
+*.docx
+*.rtf
+*.odt
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.bmp
+*.tif
+*.tiff
+
+# --- Tabular and statistical data ------------------------------------------
+*.csv
+*.tsv
+*.xls
+*.xlsx
+*.xlsm
+*.ods
+*.parquet
+*.feather
+*.dta
+*.sav
+*.rds
+*.RData
+*.db
+*.sqlite
+*.sqlite3
+
+# --- Structured pipeline data ----------------------------------------------
+# Every JSON this tool writes is document content: ocr_docling.json,
+# headings.json, figures.json. Nothing it needs in order to run is a .json.
+*.json
+*.jsonl
+*.ndjson
+
+# --- Extracted text and logs -----------------------------------------------
+# text_docling.txt and the .md exports are the OCR'd document itself; logs
+# quote paths and page content.
+*.txt
+*.log
+*.md
+
+# --- Geospatial ------------------------------------------------------------
+# Site coordinates are the most restricted material in the corpus.
+*.shp
+*.shx
+*.dbf
+*.prj
+*.cpg
+*.sbn
+*.sbx
+*.qpj
+*.kml
+*.kmz
+*.gpkg
+*.geojson
+*.gml
+*.gdb/
+
+# --- Archives (an export, zipped, is still an export) ----------------------
+*.zip
+*.7z
+*.rar
+*.tar
+*.gz
+*.tgz
+*.bz2
+
+# --- Secrets ---------------------------------------------------------------
+.env
+.env.*
+*.key
+*.pem
+*.pfx
+*.p12
+credentials*
+secrets*
+
+# --- Editor, R, and OS cruft -----------------------------------------------
+.Rhistory
+.Rproj.user/
+.Rproj
+.idea/
+.vscode/
 .claude/
+*.swp
+*~
+~$*
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- Always keep: what this program needs to run ---------------------------
+# Explicit, so no broad rule above can ever quietly drop one of them.
+!.gitignore
+!README.md
+!pyproject.toml
+!uv.lock
+!requirements.txt
+!config.yaml
+!config.example.yaml

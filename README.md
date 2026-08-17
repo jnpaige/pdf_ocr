@@ -144,7 +144,8 @@ docling:
 | `docling.extract_figures` | `false` | Extract embedded figures as images |
 | `docling.figures_scale` | `2.0` | Resolution multiplier for extracted figures |
 | `docling.classify_figures` | `false` | Run Docling's picture classifier |
-| `docling.picture_description_model` | unset | Caption figures with a local vision model via Ollama |
+
+**Figure captioning.** Docling's built-in picture-description stage sends figure image data to an outside server, so it is walled off here and its config keys are rejected at startup. Use the `figure_captioner` repo instead — it captions the extracted figures with a model running on this machine.
 
 **Chunking.** `chunk_size: 50` is what the 2026-08 runs used. It applies only to documents that exceed it, so one value is safe across a mixed corpus — 2–15 page site forms never chunk, while 185-page Phase II reports and 380-page GLO volumes split into 4 and 8 pieces respectively. Page numbering stays continuous across chunk boundaries, so `=== Page N ===` markers still match the original document; intermediate pieces are kept in a `_chunks/` subfolder. Without it, a long document is one slow pass that loses everything if it crashes.
 
