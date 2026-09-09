@@ -1,0 +1,11 @@
+# config_fill_captions.yaml — fill_missing_captions.py
+
+output_dir: 'C:\Users\jpaige\Box\4. Research\LLM_segmenting_procedural_units\pdfs_ocr_figures_pilot'
+
+model:            'gemma3:27b'
+base_url:         'http://localhost:11434'
+temperature:      0.05
+timeout_seconds:  900
+
+window_pages_before: 1
+window_pages_after:  2

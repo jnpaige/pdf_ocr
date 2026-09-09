@@ -345,8 +345,24 @@ def main():
     from ocr_docling import build_converter
     converter = build_converter(cfg.get("docling", {}))
 
+    failed: list[str] = []
     for pdf_path in pdfs:
-        process_pdf(pdf_path, cfg, converter)
+        try:
+            process_pdf(pdf_path, cfg, converter)
+        except Exception as e:
+            # One malformed/unusual PDF must not take the rest of a
+            # corpus-scale run down with it — log and move on. Common real
+            # cause: Docling's backend rejecting a filename/PDF structure
+            # that other tools (PyMuPDF) read fine; see _safe_convert_path
+            # in lib/ocr_docling.py for the filename-encoding case that's
+            # already handled — this catches whatever isn't.
+            print(f"  [ERROR] {pdf_path.name}: {type(e).__name__}: {e}")
+            failed.append(pdf_path.name)
+
+    if failed:
+        print(f"\n{len(failed)} PDF(s) failed and were skipped:")
+        for name in failed:
+            print(f"  - {name}")
 
     print("\nAll done.")
 

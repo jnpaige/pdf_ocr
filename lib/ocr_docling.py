@@ -397,6 +397,44 @@ def build_converter(docling_cfg: dict | None = None):
     )
 
 
+def _safe_convert_path(pdf_path: Path) -> tuple[Path, Path | None]:
+    """Return a path safe to hand to Docling's PDF backend, plus a temp file
+    to delete afterward (None if pdf_path was already safe, i.e. the common
+    case — no copy made).
+
+    Docling's PDFium-based backend can fail to open a PDF whose filename
+    contains certain non-ASCII characters — observed on Windows with a
+    Unicode right single quote (U+2019) in an author name, e.g.
+    "...Ifri n'Etsedda.pdf" — raising `ConversionError: ... is not valid`,
+    even though PyMuPDF opens the identical bytes without complaint and
+    reports the correct page count. This is a path-handling limitation of
+    the backend, not a property of the PDF content, but it's fatal to the
+    whole run once it happens: run.py's main loop does not catch per-PDF
+    exceptions, so one such file kills every PDF still queued behind it.
+
+    Academic literature filenames routinely carry diacritics and special
+    characters in author names, so this isn't a rare edge case for this
+    pipeline's actual corpora — copying to a plain-ASCII temp filename
+    before conversion (and converting from that copy) sidesteps the bug
+    entirely rather than dropping every affected document.
+    """
+    try:
+        str(pdf_path).encode("ascii")
+        return pdf_path, None
+    except UnicodeEncodeError:
+        pass
+
+    import shutil
+    import tempfile
+
+    fd, tmp_name = tempfile.mkstemp(suffix=".pdf")
+    import os
+    os.close(fd)
+    tmp_path = Path(tmp_name)
+    shutil.copy(pdf_path, tmp_path)
+    return tmp_path, tmp_path
+
+
 def run_ocr(
     pdf_path: Path,
     out_dir: Path,
@@ -444,7 +482,13 @@ def run_ocr(
         print(f"  Running Docling + Surya OCR...")
     else:
         print(f"  Running Docling (using existing text layer, do_ocr: false)...")
-    result = converter.convert(pdf_path)
+
+    convert_path, tmp_cleanup = _safe_convert_path(pdf_path)
+    try:
+        result = converter.convert(convert_path)
+    finally:
+        if tmp_cleanup is not None:
+            tmp_cleanup.unlink(missing_ok=True)
     doc = result.document
 
     results, n_recovered, fallback_pages = _build_page_results(doc, raw_cells=_raw_ocr_cells_by_page)
@@ -490,29 +534,334 @@ def run_ocr(
         print(f"  Saved headings    → {h_path.name}  ({_count_headings(h_path)} headings)")
 
     if extract_figures:
-        n_figs = _extract_figures(doc, out_dir)
+        delete_classes = set(docling_cfg.get("delete_figure_classes", []))
+        n_figs = _extract_figures(doc, out_dir, delete_figure_classes=delete_classes)
         print(f"  Saved figures     → figures/  ({n_figs} figure(s))")
 
     return results
 
 
-def _extract_figures(doc, out_dir: Path) -> int:
-    """Save each detected picture/figure as a PNG under <out_dir>/figures/, plus
-    a figures.json manifest recording page, bbox, and classification (if
-    enabled). Returns the count of figures saved.
+def _snippet(text: str | None, max_chars: int = 500) -> str | None:
+    if not text:
+        return None
+    text = text.strip()
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars].rstrip() + "…"
 
-    No caption field: figure_captioner is the captioning pass, and it writes
-    its own <model_slug>__<figure_stem>.caption.json next to these files
-    rather than editing this manifest, so nothing downstream reads a caption
-    from here.
+
+def _figure_context(doc) -> dict[str, dict]:
+    """Walk the document once in reading order to recover, for every picture,
+    the context a human (or a VLM downstream) would use to interpret it: the
+    active heading path, and the body text immediately before/after it.
+
+    PictureItem itself carries none of this — only its own bbox/page — so
+    this has to be reconstructed from position in doc.iterate_items() rather
+    than read off the item directly. heading_path[i] is the heading active at
+    document level i (index 0 = document title, if any); it's a best-effort
+    reconstruction that assumes headings are properly nested (docling levels
+    don't skip), same assumption the rest of this file already makes about
+    heading structure (see extract_headings_from_txt).
+
+    Also resolves each picture's caption here via pic.caption_text(doc)
+    directly. An earlier version tried to recover captions Docling didn't
+    associate (e.g. a multi-panel figure detected as several independent
+    PictureItems sharing one printed caption, attached to only one of them)
+    by inheriting from reading-order neighbors. Checked against a real
+    corpus: it recovered a real but modest fraction of the gap (6 of 147
+    figures) and never touched documents whose uncaptioned figures don't
+    happen to sit next to a captioned sibling (most of the missing ones, in
+    practice) — not enough yield to justify the extra mechanism, especially
+    now that a missing caption is just an honestly-empty box on the saved
+    image rather than a silently-absent field. Reverted in favor of trusting
+    Docling's own association plainly; ~30% of figures across a real corpus
+    end up with caption: None, and that's left as-is.
+
+    Returns {picture.self_ref: {"heading_path": [...], "text_before": str|None,
+    "text_after": str|None, "caption": str|None}}.
+    """
+    from docling_core.types.doc import PictureItem, SectionHeaderItem, TitleItem
+
+    # A figure's own caption is almost always the very next text item in
+    # reading order, which made text_after just re-derive the caption field
+    # verbatim. Caption items are already captured separately (caption_text),
+    # so they're excluded here — text_before/text_after should only ever be
+    # genuine surrounding body text, not the figure's own caption restated.
+    caption_refs: set[str] = {
+        cap.cref for pic in doc.pictures for cap in pic.captions
+    }
+
+    context: dict[str, dict] = {}
+    heading_stack: list[str] = []
+    prev_text: str | None = None
+    pending_refs: list[str] = []  # pictures awaiting the next text item for text_after
+
+    for item, _level in doc.iterate_items():
+        if isinstance(item, PictureItem):
+            context[item.self_ref] = {
+                "heading_path": list(heading_stack),
+                "text_before": _snippet(prev_text),
+                "text_after": None,
+                "caption": item.caption_text(doc) or None,
+            }
+            pending_refs.append(item.self_ref)
+            continue
+
+        if item.self_ref in caption_refs:
+            continue
+
+        if isinstance(item, TitleItem):
+            heading_stack = [item.text]
+        elif isinstance(item, SectionHeaderItem):
+            heading_stack = heading_stack[: item.level] + [item.text]
+
+        text = getattr(item, "text", None)
+        if text and text.strip():
+            for ref in pending_refs:
+                context[ref]["text_after"] = _snippet(text)
+            pending_refs.clear()
+            prev_text = text
+
+    return context
+
+
+# Docling's DocumentFigureClassifier-v2.5 labels that are publisher/platform
+# chrome rather than a real figure — verified by hand against a real corpus
+# (every "logo"/"icon" sample checked was a journal masthead banner or the
+# CrossRef "Check for updates" badge, never an actual figure) before trusting
+# this as grounds for deletion rather than just a flag. Only `logo` and
+# `icon` are deleted by default; the rest of this set exists so a caller can
+# opt into the wider net (docling.delete_figure_classes in config) without
+# having to know Docling's full label list.
+JUNK_FIGURE_CLASSES = {
+    "logo", "icon", "page_thumbnail", "qr_code", "bar_code",
+    "stamp", "signature", "screenshot_from_computer",
+    "screenshot_from_manual", "calendar", "crossword_puzzle", "music",
+}
+
+
+def prune_figures_by_class(figures_dir: Path, manifest: dict, junk_classes: set[str]) -> tuple[dict, int]:
+    """Delete figure PNGs whose Docling classification is in junk_classes and
+    drop them from the manifest. Returns (updated_manifest, n_deleted).
+
+    Retroactive cleanup only — a run made before delete_figure_classes
+    existed, or one made with a narrower junk set than you want now. New
+    runs skip these figures before ever saving them (see
+    _extract_figures' delete_figure_classes param) rather than saving then
+    deleting; this function exists so an already-extracted corpus doesn't
+    have to be re-OCR'd from scratch just to apply that same policy after
+    the fact.
+    """
+    kept: list[dict] = []
+    n_deleted = 0
+    for entry in manifest.get("figures", []):
+        if entry.get("classification") in junk_classes:
+            (figures_dir / entry["file"]).unlink(missing_ok=True)
+            n_deleted += 1
+        else:
+            kept.append(entry)
+    manifest["figures"] = kept
+    manifest["n_figures"] = len(kept)
+    return manifest, n_deleted
+
+
+def _parse_figure_number(caption: str | None) -> int | None:
+    """Pull the printed figure number off the front of a caption, e.g.
+    "Fig. 3. Artifacts from..." -> 3, "Figure 12: " -> 12. Returns None if
+    the caption is missing or doesn't start with a recognizable "Fig[ure]
+    N" label (multi-panel figures, uncaptioned plates, non-English papers,
+    etc.) — those fall back to positional numbering in _extract_figures.
+    """
+    import re
+
+    if not caption:
+        return None
+    m = re.match(r'^fig(?:ure)?\.?\s*(\d+)', caption.strip(), re.IGNORECASE)
+    return int(m.group(1)) if m else None
+
+
+def stamp_figure_label(image, label: str):
+    """Stamp `label` (e.g. "Fig 2 - p3") in the top-right corner of a figure
+    image — the same troubleshooting idea as _stamp_page_label's
+    `=== Page N ===` PDF stamp, applied to figures: a bare image opened out
+    of context (e.g. inside a VLM prompt, or a review tool) can still be
+    matched back to its assigned figure/page by eye, without needing the
+    filename visible. Returns the (possibly mode-converted) image; call
+    before image.save() and use the returned image, not the original — this
+    does not mutate in place if a mode conversion was needed.
+    """
+    from PIL import ImageDraw, ImageFont
+
+    if image.mode != "RGB":
+        image = image.convert("RGB")
+    draw = ImageDraw.Draw(image)
+
+    fontsize = max(10, min(18, image.width // 40))
+    try:
+        font = ImageFont.truetype("arial.ttf", fontsize)
+    except Exception:
+        font = ImageFont.load_default()
+
+    bbox = draw.textbbox((0, 0), label, font=font)
+    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+    pad = 4
+    x2, y1 = image.width - 6, 6
+    x1, y2 = x2 - tw - 2 * pad, y1 + th + 2 * pad
+    draw.rectangle([x1, y1, x2, y2], fill=(255, 255, 255))
+    draw.text((x1 + pad, y1 + pad - bbox[1]), label, fill=(0, 0, 0), font=font)
+    return image
+
+
+def compose_figure_with_caption(image, caption: str | None):
+    """Append `caption` as a same-width text box beneath a figure image, so
+    the two travel as one self-contained file — opening the PNG in any
+    viewer shows the caption directly, and a downstream VLM call that only
+    receives the image file still has the caption text in front of it.
+
+    Caption text and figure image can otherwise get separated (two
+    independent pieces of data, only ever joined via figures.json) or
+    simply never looked at together by a human browsing the figures/
+    folder. This makes that pairing physically permanent. Returns `image`
+    unchanged if there's no caption to add — Docling doesn't always
+    associate one (~30% of figures across a real corpus; see
+    _figure_context).
+    """
+    from PIL import ImageDraw, ImageFont
+    import textwrap
+
+    if image.mode != "RGB":
+        image = image.convert("RGB")
+    if not caption:
+        return image
+
+    width = image.width
+    fontsize = max(14, min(22, width // 45))
+    try:
+        font = ImageFont.truetype("arial.ttf", fontsize)
+    except Exception:
+        font = ImageFont.load_default()
+
+    tmp_draw = ImageDraw.Draw(image)
+    avg_char_w = tmp_draw.textlength("x" * 40, font=font) / 40
+    wrap_chars = max(20, int(width * 0.94 / avg_char_w))
+
+    wrapped_lines: list[str] = []
+    for para in caption.split("\n"):
+        wrapped_lines.extend(textwrap.wrap(para, width=wrap_chars) or [""])
+
+    line_height = int(fontsize * 1.4)
+    pad = 14
+    box_height = pad * 2 + line_height * len(wrapped_lines)
+
+    composite = Image.new("RGB", (width, image.height + box_height), (255, 255, 255))
+    composite.paste(image, (0, 0))
+    draw = ImageDraw.Draw(composite)
+    draw.line([(0, image.height), (width, image.height)], fill=(0, 0, 0), width=2)
+
+    y = image.height + pad
+    for line in wrapped_lines:
+        draw.text((pad, y), line, fill=(0, 0, 0), font=font)
+        y += line_height
+
+    return composite
+
+
+def _save_image_with_retry(image, path: Path, attempts: int = 4, delay: float = 0.5) -> None:
+    """image.save() with a short retry-with-backoff, for output directories
+    that live under a sync client (Box Drive, OneDrive, ...).
+
+    Seen in practice: two full-corpus runs each failed on exactly one figure
+    save with OSError [Errno 22] Invalid argument, on a different filename
+    each time, only ever on the Box-synced output path — the identical
+    image object saved without error to a local disk path in isolation.
+    That signature (non-deterministic file, environment-specific, image
+    itself fine) points at the sync client transiently holding the file
+    rather than anything wrong with the image, so retrying after a brief
+    pause is the right fix, not a code change to how the image is built.
+    """
+    import time
+
+    last_err: OSError | None = None
+    for attempt in range(attempts):
+        try:
+            image.save(path)
+            return
+        except OSError as e:
+            last_err = e
+            if attempt < attempts - 1:
+                time.sleep(delay)
+    raise last_err
+
+
+def _extract_figures(doc, out_dir: Path, delete_figure_classes: set[str] | None = None) -> int:
+    """Save each detected picture/figure as a PNG under <out_dir>/figures/, plus
+    a figures.json manifest recording page, bbox, classification (if enabled),
+    the figure's own printed caption (if Docling found one), its active
+    heading path, and a short snippet of body text immediately before/after
+    it. Returns the count of figures kept (after any deletion below).
+
+    The caption/heading/context fields describe what's already on the page —
+    they make each manifest entry a self-contained unit a downstream VLM
+    pass can prompt from without re-reading the whole document. This is
+    distinct from a model-GENERATED caption: figure_captioner (or any future
+    downstream coding pass) writes that as its own
+    <model_slug>__<figure_stem>.caption.json next to these files rather than
+    editing this manifest, so nothing here is overwritten by that later step.
+
+    The saved PNG itself also carries the resolved caption text, appended
+    as a same-width box beneath the figure (compose_figure_with_caption) —
+    opening a figure file directly, e.g. from the figures/ folder, shows
+    its caption without needing to cross-reference figures.json. Skipped
+    when Docling didn't associate a caption with this picture at all (see
+    _figure_context) — left as a plain figure with no box, not a guess.
+
+    delete_figure_classes: if given (requires classify_figures: true to have
+    populated the classification field in the first place), any figure whose
+    Docling classification is in this set is skipped entirely — never
+    rendered, never saved to disk, never in the manifest — rather than saved
+    and then deleted. Classification runs as a docling enrichment stage
+    *before* this function is called, so every picture already has its
+    classification available up front; there's no reason to pay for
+    get_image()'s render/crop or write a PNG for something about to be
+    thrown away. See prune_figures_by_class/JUNK_FIGURE_CLASSES for the
+    equivalent retroactive cleanup of a figures.json from a run that
+    predates this setting.
+
+    Filenames are `fig<N>_p<page>.png`, N an assumed sequential number — the
+    1st, 2nd, 3rd, ... kept figure in document reading order — not the
+    figure's own printed caption number. An earlier version tried to parse
+    the real number off the caption (e.g. "Fig. 3. Artifacts..." -> 3) and
+    fall back to a separate "unlabeled" counter when that failed, but
+    Docling's caption-to-picture association misses often enough in
+    practice that most figures ended up in the unlabeled bucket anyway —
+    two parallel numbering schemes with the "real" one rarely firing wasn't
+    worth the complexity. _parse_figure_number's result is still recorded
+    per-figure as `printed_figure_number` (None when not parseable) so a
+    caption-derived number remains available for QA/cross-checking without
+    driving the filename. Because N is now always assigned (never skipped
+    or letter-suffixed), it stays contiguous among survivors automatically
+    — deleting a logo/icon before this point just means one fewer picture
+    in the loop, not a gap.
     """
     import json
 
+    delete_figure_classes = delete_figure_classes or set()
     figures_dir = out_dir / "figures"
     figures_dir.mkdir(exist_ok=True)
 
+    context_by_ref = _figure_context(doc)
+
     manifest: list[dict] = []
-    for i, pic in enumerate(doc.pictures):
+    n_skipped = 0
+    n = 0  # assumed sequential figure number, 1-indexed, kept figures only
+    for pic in doc.pictures:
+        classification = getattr(pic.meta, "classification", None) if pic.meta else None
+        class_name = classification.get_main_prediction().class_name if classification is not None else None
+
+        if class_name in delete_figure_classes:
+            n_skipped += 1
+            continue
+
         image = pic.get_image(doc)
         if image is None:
             continue
@@ -521,8 +870,17 @@ def _extract_figures(doc, out_dir: Path) -> int:
         page_no = (prov.page_no - 1) if prov else None  # 0-indexed, matches text_docling.txt
         bbox = prov.bbox if prov else None
 
-        fname = f"fig_p{page_no if page_no is not None else 'x'}_{i:03d}.png"
-        image.save(figures_dir / fname)
+        ctx = context_by_ref.get(pic.self_ref, {})
+        caption = ctx.get("caption")
+        printed_fig_num = _parse_figure_number(caption)
+
+        n += 1
+        page_label = page_no if page_no is not None else 'x'
+        fname = f"fig{n}_p{page_label}.png"
+
+        image = stamp_figure_label(image, f"Fig {n} - p{page_label}")
+        image = compose_figure_with_caption(image, caption)
+        _save_image_with_retry(image, figures_dir / fname)
 
         entry = {
             "file": fname,
@@ -530,18 +888,27 @@ def _extract_figures(doc, out_dir: Path) -> int:
             "bbox": [bbox.l, bbox.t, bbox.r, bbox.b] if bbox else None,
         }
 
-        classification = getattr(pic.meta, "classification", None) if pic.meta else None
-        if classification is not None:
-            pred = classification.get_main_prediction()
-            entry["classification"] = pred.class_name
+        if class_name is not None:
+            entry["classification"] = class_name
+
+        entry["caption"] = caption if caption else None
+        entry["printed_figure_number"] = printed_fig_num
+
+        entry["heading_path"] = ctx.get("heading_path", [])
+        entry["text_before"] = ctx.get("text_before")
+        entry["text_after"] = ctx.get("text_after")
 
         manifest.append(entry)
 
+    if n_skipped:
+        print(f"  Skipped {n_skipped} figure(s) classified as {sorted(delete_figure_classes)} (not saved)")
+
+    out = {"n_figures": len(manifest), "figures": manifest}
     (figures_dir / "figures.json").write_text(
-        json.dumps({"n_figures": len(manifest), "figures": manifest}, indent=2, ensure_ascii=False),
+        json.dumps(out, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
-    return len(manifest)
+    return out["n_figures"]
 
 
 def _count_headings(h_path: Path) -> int:

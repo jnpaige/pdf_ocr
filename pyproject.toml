@@ -11,6 +11,7 @@ dependencies = [
     "torch",
     "torchvision",
     "rapidfuzz",
+    "httpx",
 ]
 
 # Pin torch/torchvision to the CUDA build. Without this, `uv sync`/`uv run`
