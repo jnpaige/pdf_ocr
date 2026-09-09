@@ -80,6 +80,17 @@ docling:
   # Run Docling's picture classifier over extracted figures. Default: false.
   # classify_figures: true
 
+  # Delete figures whose Docling classification (requires classify_figures:
+  # true) is in this list, rather than saving them — for publisher/platform
+  # chrome that isn't a real figure at all. "logo" and "icon" are verified
+  # safe to delete outright (checked by hand against a real corpus: every
+  # sample was a journal masthead banner or the CrossRef "Check for updates"
+  # badge). Default: unset (nothing deleted). Docling's full label set also
+  # includes page_thumbnail, qr_code, bar_code, stamp, signature,
+  # screenshot_from_computer, screenshot_from_manual, calendar,
+  # crossword_puzzle, music if you want to widen the net.
+  # delete_figure_classes: ['logo', 'icon']
+
   # Figure captioning is not configurable here. Docling's built-in
   # picture-description stage sends figure image data to an outside server,
   # so it is walled off in this pipeline and the config keys for it are
