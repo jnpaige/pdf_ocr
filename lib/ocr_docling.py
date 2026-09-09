@@ -61,17 +61,142 @@ def _cells_reading_order_text(cells: list[TextCell]) -> str:
     return "\n".join(c.text for c in ordered if c.text and c.text.strip())
 
 
-def _bbox_to_dict(bbox) -> dict:
-    """Serialize a docling BoundingBox as a plain dict, self-describing its
-    coordinate origin (TOPLEFT or BOTTOMLEFT — docling item bboxes and raw
-    Surya cell bboxes don't share a convention, so origin travels with every
-    box rather than being normalized/assumed away here)."""
+BBOX_ORIGIN = "BOTTOMLEFT"
+
+
+def _bbox_to_dict(bbox, page_height: float | None = None) -> dict:
+    """Serialize a docling BoundingBox as a plain dict, normalized to a
+    BOTTOMLEFT origin.
+
+    Docling hands out mixed conventions — text-item provenance is BOTTOMLEFT,
+    table cell bboxes are TOPLEFT, raw Surya cells follow whatever rectangle
+    they came from. A consumer that assumes one convention draws every box
+    from the other mirrored vertically about the page, which looks like a
+    plausible box in the wrong place rather than an error. Converting once,
+    here, means a bbox in this output means the same thing no matter which
+    part of docling produced it.
+
+    `origin` is still written on every box and consumers should still branch
+    on it: it is the contract, it keeps already-written output (all
+    BOTTOMLEFT) readable by the same code, and a box that could not be
+    converted must still describe itself honestly.
+
+    page_height is needed to flip a TOPLEFT box. Without it the box is passed
+    through carrying its true origin rather than being silently mislabelled
+    as normalized.
+    """
     if bbox is None:
         return {}
     origin = getattr(bbox, "coord_origin", None)
+    origin_value = origin.value if origin is not None else "TOPLEFT"
+    if origin_value != BBOX_ORIGIN and page_height:
+        try:
+            bbox = bbox.to_bottom_left_origin(page_height)
+            origin_value = BBOX_ORIGIN
+        except Exception:
+            pass
     return {
         "l": bbox.l, "t": bbox.t, "r": bbox.r, "b": bbox.b,
-        "origin": origin.value if origin is not None else "TOPLEFT",
+        "origin": origin_value,
+    }
+
+
+def _page_heights(doc) -> dict[int, float]:
+    """{0-indexed page -> height}, for normalizing bbox coordinate origins."""
+    heights: dict[int, float] = {}
+    for page_no, page in (getattr(doc, "pages", None) or {}).items():
+        size = getattr(page, "size", None)
+        height = getattr(size, "height", None)
+        if height:
+            heights[page_no - 1] = float(height)
+    return heights
+
+
+def _prov_bboxes(prov, page_heights: dict[int, float]) -> list[dict]:
+    """Every region a docling item occupies, each tagged with its own page.
+
+    An item's `prov` is a list, and a paragraph that flows across a column
+    break — or across a page break — records one entry per region. Reading
+    only `prov[0]` silently truncates such an item's geometry to its first
+    fragment: a 1167-word paragraph spanning three regions reported a box
+    covering roughly a fifth of itself, which looks like a correctly drawn
+    box around the wrong amount of text rather than like an error.
+
+    The page number travels with each region because later regions routinely
+    fall on the *following* page, while the item's text stays attached to the
+    page its first region is on.
+    """
+    regions: list[dict] = []
+    for entry in (prov or []):
+        page_index = entry.page_no - 1
+        box = _bbox_to_dict(entry.bbox, page_heights.get(page_index))
+        if box:
+            box["page"] = page_index
+            regions.append(box)
+    return regions
+
+
+def _union_bboxes(boxes: list[dict]) -> dict:
+    """Union of already-normalized BOTTOMLEFT boxes (t is the upper edge)."""
+    usable = [b for b in boxes if b and b.get("origin") == BBOX_ORIGIN]
+    if not usable:
+        return {}
+    return {
+        "l": min(b["l"] for b in usable), "t": max(b["t"] for b in usable),
+        "r": max(b["r"] for b in usable), "b": min(b["b"] for b in usable),
+        "origin": BBOX_ORIGIN,
+    }
+
+
+def _table_to_dict(item, page_heights: dict[int, float]) -> dict:
+    """Serialize a docling TableItem: its region, its grid, and geometry per
+    cell and per row.
+
+    Tables used to leave this output with no coordinates at all. TableItem has
+    no `.text` attribute, so the text-item loop below skipped it before ever
+    reading its provenance, and a table survived only as pipe rows in md_text.
+    Anything wanting to point at a table row on the page — an overlay, a QA
+    highlighter, a per-row tag — had nothing to point at, even though docling
+    had computed the geometry and was holding it.
+
+    Row rectangles are unioned from the cells sharing a row index, so a
+    consumer can address a row directly instead of reconstructing it.
+    """
+    prov = getattr(item, "prov", None)
+    data = getattr(item, "data", None)
+    page_height = page_heights.get((prov[0].page_no - 1) if prov else 0)
+
+    cells: list[dict] = []
+    row_boxes: dict[int, list[dict]] = defaultdict(list)
+    row_is_header: dict[int, bool] = defaultdict(bool)
+
+    for cell in (getattr(data, "table_cells", None) or []):
+        bbox = _bbox_to_dict(getattr(cell, "bbox", None), page_height)
+        start_row = cell.start_row_offset_idx
+        end_row = max(cell.end_row_offset_idx, start_row + 1)
+        cells.append({
+            "text": cell.text,
+            "bbox": bbox,
+            "start_row": start_row, "end_row": cell.end_row_offset_idx,
+            "start_col": cell.start_col_offset_idx, "end_col": cell.end_col_offset_idx,
+            "column_header": bool(cell.column_header),
+            "row_header": bool(cell.row_header),
+        })
+        for r in range(start_row, end_row):
+            if bbox:
+                row_boxes[r].append(bbox)
+            row_is_header[r] = row_is_header[r] or bool(cell.column_header)
+
+    return {
+        "bbox": _bbox_to_dict(prov[0].bbox, page_height) if prov else {},
+        "bboxes": _prov_bboxes(prov, page_heights),
+        "num_rows": getattr(data, "num_rows", 0),
+        "num_cols": getattr(data, "num_cols", 0),
+        "rows": [
+            {"row": r, "column_header": row_is_header[r], "bbox": _union_bboxes(row_boxes[r])}
+            for r in sorted(row_boxes)
+        ],
+        "cells": cells,
     }
 
 
@@ -298,7 +423,7 @@ def run_ocr(
     chunks are concatenated, instead.
 
     Returns per-page result dicts with keys:
-      page_index, image_path, text_lines, full_text, md_text
+      page_index, image_path, text_lines, tables, full_text, md_text
     """
     if docling_cfg is None:
         docling_cfg = {}
@@ -686,16 +811,26 @@ def _build_page_results(doc, raw_cells: dict[int, list] | None = None) -> tuple[
     path alone loses on handwriting-heavy corpora.
     """
     from docling_core.types.doc import SectionHeaderItem, TitleItem
+    from docling_core.types.doc.document import TableItem
 
+    page_heights = _page_heights(doc)
     page_texts: dict[int, list[tuple[str, object]]] = defaultdict(list)
+    page_tables: dict[int, list[dict]] = defaultdict(list)
 
     for item, _level in doc.iterate_items():
+        prov = getattr(item, "prov", None)
+        page_no = (prov[0].page_no - 1) if prov else 0  # 0-indexed
+
+        # Tables carry no `.text`, so they must be handled before the text
+        # guard below or they are dropped along with their geometry.
+        if isinstance(item, TableItem):
+            page_tables[page_no].append(_table_to_dict(item, page_heights))
+            continue
+
         text = getattr(item, "text", None)
         if not text:
             continue
-        prov = getattr(item, "prov", None)
-        page_no = (prov[0].page_no - 1) if prov else 0  # 0-indexed
-        bbox = prov[0].bbox if prov else None
+        regions = _prov_bboxes(prov, page_heights)
 
         if isinstance(item, TitleItem):
             text = f"# {text}"
@@ -704,7 +839,7 @@ def _build_page_results(doc, raw_cells: dict[int, list] | None = None) -> tuple[
             num_hashes = min(item.level + 1, 6)
             text = f"{'#' * num_hashes} {text}"
 
-        page_texts[page_no].append((text, bbox))
+        page_texts[page_no].append((text, regions))
 
     raw_cells = raw_cells or {}
     max_raw_page_index = max((pn - 1 for pn in raw_cells), default=-1)
@@ -731,10 +866,14 @@ def _build_page_results(doc, raw_cells: dict[int, list] | None = None) -> tuple[
                     "image_path": "",
                     "text_lines": [
                         {"text": c.text, "confidence": c.confidence,
-                         "bbox": _bbox_to_dict(c.rect.to_bounding_box())}
-                        for c in sorted(cells, key=lambda c: (round(c.rect.to_bounding_box().t / 15.0), c.rect.to_bounding_box().l))
-                        if c.text and c.text.strip()
+                         "bbox": bb, "bboxes": [{**bb, "page": i}] if bb else []}
+                        for c, bb in (
+                            (c, _bbox_to_dict(c.rect.to_bounding_box(), page_heights.get(i)))
+                            for c in sorted(cells, key=lambda c: (round(c.rect.to_bounding_box().t / 15.0), c.rect.to_bounding_box().l))
+                            if c.text and c.text.strip()
+                        )
                     ],
+                    "tables": page_tables.get(i, []),
                     "full_text": fallback_text,
                     "md_text": (
                         "*Raw OCR text — Docling's layout model did not recover "
@@ -748,9 +887,16 @@ def _build_page_results(doc, raw_cells: dict[int, list] | None = None) -> tuple[
             "image_path": "",
             "md_text": doc.export_to_markdown(page_no=i + 1),
             "text_lines": [
-                {"text": t, "confidence": 1.0, "bbox": _bbox_to_dict(b)}
-                for t, b in assembled_items
+                {
+                    "text": t, "confidence": 1.0,
+                    # `bbox` stays the item's first region, unchanged, so every
+                    # existing consumer keeps working; `bboxes` is the whole truth.
+                    "bbox": {k: v for k, v in regions[0].items() if k != "page"} if regions else {},
+                    "bboxes": regions,
+                }
+                for t, regions in assembled_items
             ],
+            "tables": page_tables.get(i, []),
             "full_text": assembled_text,
         })
 

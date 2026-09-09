@@ -1,0 +1,42 @@
+# ---------------------------------------------------------------------------
+# config_holdout.yaml — the 10-paper holdout set for the procedural-unit
+# pipeline (Araho, Chazan, Coutouly, Desrosiers & Gendron, Li, Malinsky-Buller,
+# Rankama & Kankaanpaa, Shimelmitz x2, Stout 2014).
+#
+# Deliberately written to a SEPARATE output directory from
+# pdfs_ocr_figures_pilot, so this set stays a genuine holdout: no pass0/pass1
+# prompt or threshold has ever been tuned against these papers, and keeping
+# them physically apart makes it hard to blur that by accident.
+#
+# Unlike the pilot ten, these are OCR'd with table geometry, multi-region
+# provenance and normalized BOTTOMLEFT origins from the start.
+#
+# Usage:
+#   uv run python run.py --config config_holdout.yaml
+# ---------------------------------------------------------------------------
+
+pdf_input:  'C:\Users\jpaige\Box\4. Research\LLM_segmenting_procedural_units\pdfs'
+output_dir: 'C:\Users\jpaige\Box\4. Research\LLM_segmenting_procedural_units\pdfs_ocr_figures_holdout'
+
+# The input folder holds all 20 papers; this restricts the run to the 10 that
+# are not already processed in pdfs_ocr_figures_pilot.
+file_list: 'file_lists/holdout_10.txt'
+
+chunk_size: 50
+skip_existing: true
+
+docling:
+  do_ocr: true
+  # Figures are needed downstream: figures.json supplies the bbox + caption
+  # that classify_figures.py, figure_captioner and annotate_layers.py all read.
+  extract_figures: true
+  figures_scale: 2.0
+
+  # classify_figures stays OFF. Docling's picture classifier runs through
+  # torch.compile, which requires Triton — unavailable on Windows, and not
+  # something to introduce here. It is also redundant: the real figure
+  # classification in this pipeline is site_form_segmenter/classify_figures.py
+  # (qwen2.5vl via Ollama), which is multi-label and config-driven, where
+  # docling's is a single hard-coded guess. Extraction of the figure images,
+  # bboxes and captions does not depend on it.
+  classify_figures: false
