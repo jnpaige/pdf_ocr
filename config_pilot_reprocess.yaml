@@ -1,5 +1,5 @@
 # ---------------------------------------------------------------------------
-# config_holdout.yaml — the 10-paper holdout set for the procedural-unit
+# config_holdout.yaml — the 10-paper pilot set for the procedural-unit
 # pipeline (Araho, Chazan, Coutouly, Desrosiers & Gendron, Li, Malinsky-Buller,
 # Rankama & Kankaanpaa, Shimelmitz x2, Stout 2014).
 #
@@ -16,11 +16,11 @@
 # ---------------------------------------------------------------------------
 
 pdf_input:  'C:\Users\jpaige\Box\4. Research\LLM_segmenting_procedural_units\pdfs'
-output_dir: 'C:\Users\jpaige\Box\4. Research\LLM_segmenting_procedural_units\pdfs_ocr_figures_holdout'
+output_dir: 'C:\Users\jpaige\Box\4. Research\LLM_segmenting_procedural_units\pdfs_ocr_figures_pilot'
 
 # The input folder holds all 20 papers; this restricts the run to the 10 that
 # are not already processed in pdfs_ocr_figures_pilot.
-file_list: 'file_lists/holdout_10.txt'
+file_list: 'file_lists/pilot_10.txt'
 
 chunk_size: 50
 force_reprocess: true

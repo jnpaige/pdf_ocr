@@ -28,6 +28,7 @@ LAYERS PRODUCED (ordered by name so viewers group them sensibly):
     03 Clusters / <assemblage label>  blocks tagged to that cluster   [on]
     03 Clusters / comparative (2+) | general | untagged
     04 Figures / <classification>     figure regions by class
+    05 Figure pieces                  individual artefacts within a plate
 
 Only the cluster layers are on by default; everything else is a diagnostic the
 reader switches on when they want it.
@@ -38,6 +39,8 @@ INPUTS (all already written by the existing pipeline)
                                      row/cell geometry where the corpus was OCR'd
                                      after table export was added
     <doc>/figures/figures.json       pdf_ocr — figure bbox + classification
+    <doc>/figures/figure_pieces.json  figure_pieces.py — per-artefact regions,
+                                     in plate-pixel coordinates
     <doc>/<stem>_ocr.pdf             the page images to draw on
 
 Usage:
@@ -65,6 +68,7 @@ BLOCK_TYPE_COLORS = {
     "table_row": (0.20, 0.55, 0.35),
 }
 FIGURE_COLOR = (0.60, 0.35, 0.75)
+PIECE_COLOR = (0.85, 0.12, 0.12)
 
 # An OCR item shorter than this is too generic to trust as a containment match
 # for a block ("Table 2.", a stray letter) — matched by equality only.
@@ -349,6 +353,48 @@ def annotate_document(doc_dir: Path, out_dir: Path | None, verbose: bool = True)
                     if isinstance(bb, list) else bb)
             cls = fig.get("classification") or "unclassified"
             draw(doc[pi], bbox, FIGURE_COLOR, f"04 Figures / {cls}", width=2.0)
+
+    # --- 05 Figure pieces ---------------------------------------------------
+    # figure_pieces.py works on the extracted plate PNG, so its boxes are in
+    # plate-pixel space with a top-left origin. Rescale each one through the
+    # figure's own rectangle on the page to land it in PDF coordinates.
+    pieces_path = doc_dir / "figures" / "figure_pieces.json"
+    if pieces_path.exists() and figs_path.exists():
+        try:
+            piece_entries = json.loads(pieces_path.read_text(encoding="utf-8"))
+        except Exception:
+            piece_entries = []
+        fig_by_file = {}
+        for fig in figs:
+            name = Path(str(fig.get("file") or "")).name
+            if name:
+                fig_by_file[name] = fig
+        for entry in piece_entries:
+            fig = fig_by_file.get(entry.get("file"))
+            if not fig:
+                continue
+            pi, bb = fig.get("page"), fig.get("bbox")
+            if pi is None or not bb or pi >= n_pages:
+                continue
+            fig_bbox = ({"l": bb[0], "t": bb[1], "r": bb[2], "b": bb[3], "origin": "BOTTOMLEFT"}
+                        if isinstance(bb, list) else bb)
+            rect = to_rect(fig_bbox, doc[pi].rect.height)
+            pw, ph = entry.get("plate_px") or [0, 0]
+            if rect.is_empty or not pw or not ph:
+                continue
+            # The exported PNG is the picture plus, usually, a caption strip
+            # appended below it, so its height exceeds the figure's bbox while
+            # its width matches. Deriving a separate y scale from the heights
+            # would squash every box upward; the render is isotropic, so take
+            # one scale from the width and anchor at the top edge.
+            scale = rect.width / pw
+            sx, sy = rect.width / pw, rect.height / ph
+            for g in entry.get("pieces", []):
+                draw(doc[pi],
+                     {"l": rect.x0 + g["l"] * scale, "t": rect.y0 + g["t"] * scale,
+                      "r": rect.x0 + g["r"] * scale, "b": rect.y0 + g["b"] * scale,
+                      "origin": "TOPLEFT"},
+                     PIECE_COLOR, "05 Figure pieces", width=1.2)
 
     out_dir = out_dir or doc_dir
     out_dir.mkdir(parents=True, exist_ok=True)
