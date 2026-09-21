@@ -42,6 +42,18 @@ Config (YAML):
     output_dir:       where to write located_mentions.csv and annotated PDFs
     columns:          {item: item, unit_label: unit_label, key: key, value: value}
                        — override if a tool's CSV uses different column names
+    layers:           true to write toggleable PDF layers (optional content
+                       groups) instead of one flat plane — "01 Segments /
+                       <label>" margin bars showing which spatial unit each
+                       page was assigned to, and "02 Mentions / <category>"
+                       boxes+markers per category. Output is named
+                       <item>_layers.pdf rather than <item>_annotated.pdf.
+                       Default false (flat mode, unchanged).
+    output_pages:     "all" (default) or "LO-HI" / [LO, HI] to keep only that
+                       0-indexed page range in the written PDF. Trimming happens
+                       after drawing, and the baked-in "=== Page N ===" stamps
+                       keep their ORIGINAL numbers, so a trimmed file still lines
+                       up with the .md and segments.json.
     match_threshold:  rapidfuzz score cutoff, 0-100 (default 75)
     category_colors:  {key_value: [r, g, b]} 0-1 floats — optional, falls
                        back to a default palette cycling through the keys
@@ -72,6 +84,30 @@ DEFAULT_PALETTE = [
 
 def _normalize(s: str) -> str:
     return re.sub(r"\s+", " ", s or "").strip().lower()
+
+
+def _parse_page_range(spec) -> tuple[int, int] | None:
+    """Parse an `output_pages` spec like "0-35" into (lo, hi) inclusive.
+
+    None/"all"/empty means keep every page. Trimming is safe for the page-index
+    contract even though it renumbers the PDF's own pages: pdf_ocr bakes the
+    `=== Page N ===` marker into each page as real text, so a trimmed page still
+    carries its ORIGINAL index and still lines up with the .md, text_docling.txt
+    and segments.json. Useful when a pilot annotates 36 pages of a 189-page,
+    144MB volume and you want a file that opens quickly.
+    """
+    if spec is None or (isinstance(spec, str) and spec.strip().lower() in {"", "all"}):
+        return None
+    if isinstance(spec, (list, tuple)) and len(spec) == 2:
+        lo, hi = int(spec[0]), int(spec[1])
+    else:
+        m = re.match(r"^\s*(\d+)\s*-\s*(\d+)\s*$", str(spec))
+        if not m:
+            raise ValueError(f"output_pages must be 'all', 'LO-HI', or [LO, HI] — got {spec!r}")
+        lo, hi = int(m.group(1)), int(m.group(2))
+    if lo < 0 or hi < lo:
+        raise ValueError(f"output_pages range is invalid: {spec!r}")
+    return lo, hi
 
 
 # ---------------------------------------------------------------------------
@@ -367,6 +403,19 @@ def annotate(cfg: dict, located: list[dict]) -> None:
             x0, y0, x1, y1 = bbox["l"], bbox["t"], bbox["r"], bbox["b"]
         return fitz.Rect(x0, y0, x1, y1)
 
+    # --- Optional OCG layer mode -------------------------------------------
+    # Off by default, so the existing flat output is unchanged. When on, every
+    # category owns a toggleable PDF layer, which is what lets colour mean
+    # something again: the flat plane below had to give up per-category box
+    # colour entirely, because a paragraph mentioning both a village and a road
+    # could only get one box and differently-coloured boxes overdrew each other
+    # (see the neutral-outline comment further down). Layers remove that
+    # constraint — a paragraph in three categories simply appears in three
+    # planes. Same reasoning annotate_layers.py gives for the lithic pipeline.
+    use_layers = bool(cfg.get("layers", False))
+    page_range = _parse_page_range(cfg.get("output_pages"))
+    segments_dir = Path(cfg["segments_dir"]) if cfg.get("segments_dir") else None
+
     n_annotated_docs = 0
     for item in sorted({item for item, _ in by_item_page}):
         ocr_pdf_path = ocr_output_dir / item / f"{item}_ocr.pdf"
@@ -375,6 +424,42 @@ def annotate(cfg: dict, located: list[dict]) -> None:
             continue
 
         doc = fitz.open(str(ocr_pdf_path))
+        n_src_pages = len(doc)
+
+        # OCGs are per-document, so build them per item.
+        _ocg_cache: dict[str, int] = {}
+
+        def ocg(name: str, on: bool = True):
+            """xref of the named layer, or None when layer mode is off."""
+            if not use_layers:
+                return None
+            if name not in _ocg_cache:
+                _ocg_cache[name] = doc.add_ocg(name, on=on)
+            return _ocg_cache[name]
+
+        # Layer 01 — the SEGMENTATION itself: a margin bar on every page,
+        # one layer per township/range block. This is what makes the whole
+        # chain legible in one file: which spatial unit a page was assigned
+        # to, and which mentions were found inside it.
+        if use_layers and segments_dir:
+            seg_path = next(segments_dir.glob(f"*{item}*.segments.json"), None)
+            if seg_path:
+                seg_pages = _load_segments_pages(seg_path)
+                for label in sorted(seg_pages):
+                    if label.endswith("_pages") or not seg_pages[label]:
+                        continue
+                    xref = ocg(f"01 Segments / {label}", on=True)
+                    for pno in seg_pages[label]:
+                        if pno >= len(doc):
+                            continue
+                        pg = doc[pno]
+                        bar = fitz.Rect(6, 60, 18, pg.rect.height - 60)
+                        try:
+                            pg.draw_rect(bar, color=(0.15, 0.35, 0.65),
+                                         fill=(0.15, 0.35, 0.65), fill_opacity=0.30,
+                                         width=0, overlay=True, oc=xref)
+                        except Exception:
+                            pass
 
         # Stamp every page (not just pages with mentions) with the same
         # `=== Page N ===` marker the .md/.txt outputs use, top-right, as
@@ -410,24 +495,44 @@ def annotate(cfg: dict, located: list[dict]) -> None:
             for cluster in _cluster_mentions(mentions):
                 boxes = [json.loads(m["bbox"]) for m in cluster]
                 rect = _to_fitz_rect(_union_raw_bboxes(boxes), ph)
-                try:
-                    # Border only, no fill, and ALWAYS the same neutral
-                    # color — not colored by the cluster's "dominant"
-                    # category. A paragraph mentioning both a village and a
-                    # road used to get one box in whichever category
-                    # happened to have more mentions, silently hiding that
-                    # the other category was there at all (and when two
-                    # categories' matches didn't quite cluster together,
-                    # their differently-colored boxes would visually
-                    # compete, each overdrawing the other). One consistent
-                    # outline color can never hide another box, since
-                    # there's only ever one color — the marker grid below is
-                    # the only place category identity lives now, and it's
-                    # already laid out so nothing overlaps.
-                    page.draw_rect(rect, color=(0.35, 0.35, 0.35), width=3.6, stroke_opacity=0.5, overlay=True)
-                    n_clusters += 1
-                except Exception:
-                    continue
+                cats_here = sorted({m[key_col] for m in cluster})
+                if use_layers:
+                    # One box per category present, each in its own plane.
+                    # Nested slightly so co-located categories stay visible
+                    # when several layers are switched on at once.
+                    for depth, cat in enumerate(cats_here):
+                        xref = ocg(f"02 Mentions / {cat}", on=True)
+                        r2 = fitz.Rect(rect.x0 - depth * 1.6, rect.y0 - depth * 1.6,
+                                       rect.x1 + depth * 1.6, rect.y1 + depth * 1.6)
+                        try:
+                            page.draw_rect(r2, color=palette.get(cat, (0.5, 0.5, 0.5)),
+                                           width=2.0, stroke_opacity=0.85,
+                                           overlay=True, oc=xref)
+                            n_clusters += 1
+                        except Exception:
+                            continue
+                else:
+                    try:
+                        # Flat mode: border only, no fill, and ALWAYS the same
+                        # neutral color — not colored by the cluster's
+                        # "dominant" category. A paragraph mentioning both a
+                        # village and a road used to get one box in whichever
+                        # category happened to have more mentions, silently
+                        # hiding that the other category was there at all (and
+                        # when two categories' matches didn't quite cluster
+                        # together, their differently-colored boxes would
+                        # visually compete, each overdrawing the other). One
+                        # consistent outline color can never hide another box,
+                        # since there's only ever one color — the marker grid
+                        # below is the only place category identity lives in
+                        # this mode, and it's already laid out so nothing
+                        # overlaps. Layer mode has no such constraint, which is
+                        # why it colors the boxes above.
+                        page.draw_rect(rect, color=(0.35, 0.35, 0.35), width=3.6,
+                                       stroke_opacity=0.5, overlay=True)
+                        n_clusters += 1
+                    except Exception:
+                        continue
 
                 # Group same-category mentions together in the grid so the
                 # per-category count is easy to read off at a glance
@@ -440,18 +545,35 @@ def annotate(cfg: dict, located: list[dict]) -> None:
                     my0 = rect.y0 + row * (MARKER + GAP)
                     marker_rect = fitz.Rect(mx0, my0, mx0 + MARKER, my0 + MARKER)
                     m_color = palette.get(m[key_col], (0.5, 0.5, 0.5))
+                    m_xref = ocg(f"02 Mentions / {m[key_col]}", on=True)
                     try:
                         page.draw_rect(marker_rect, color=m_color, fill=m_color,
-                                        fill_opacity=0.9, width=0.5, overlay=True)
+                                        fill_opacity=0.9, width=0.5, overlay=True,
+                                        oc=m_xref)
                         annot = page.add_text_annot(marker_rect.tl, f"{m[key_col]}: {m[value_col]}")
                         annot.set_colors(stroke=m_color)
+                        if m_xref is not None:
+                            annot.set_oc(m_xref)
                         annot.update()
                         n_markers += 1
                     except Exception:
                         continue
 
-        out_path = out_dir / f"{item}_annotated.pdf"
-        doc.save(str(out_path))
+        out_path = out_dir / (f"{item}_layers.pdf" if use_layers
+                              else f"{item}_annotated.pdf")
+        # Trim LAST: every page index used above is an index into the untrimmed
+        # document, so selecting earlier would shift pages under the annotations.
+        if page_range:
+            lo, hi = page_range
+            keep = [i for i in range(len(doc)) if lo <= i <= hi]
+            if not keep:
+                print(f"  SKIP {item} — output_pages {lo}-{hi} selects no pages")
+                doc.close()
+                continue
+            doc.select(keep)
+            print(f"     trimmed to pages {lo}-{hi} ({len(keep)} of {n_src_pages}); "
+                  f"'=== Page N ===' stamps still carry original indices")
+        doc.save(str(out_path), garbage=3, deflate=True)
         doc.close()
         n_annotated_docs += 1
         print(f"  OK {item} — {n_clusters} paragraph box(es), {n_markers} mention marker(s) -> {out_path.name}")

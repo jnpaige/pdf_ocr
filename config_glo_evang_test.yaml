@@ -1,0 +1,34 @@
+# ---------------------------------------------------------------------------
+# config_glo_evang_test.yaml — pdf_ocr, GLO Evangeline 4-volume test re-OCR
+# ---------------------------------------------------------------------------
+# Purpose: re-run the CURRENT pdf_ocr (post-2026-09-09 geometry: per-page
+# `tables` with per-cell/per-row bboxes, multi-region `bboxes` per text item,
+# BOTTOMLEFT-normalized origins) over four GLO field-note volumes selected for
+# density of settlement / agricultural-field / transportation / Indigenous
+# mentions, so the index-page table and the running T/R headers can be
+# evaluated with real geometry rather than the flattened raw-OCR fallback the
+# 2026-08 run produced.
+#
+# NO figure extraction: extract_figures / classify_figures / picture_description
+# are all left unset (their defaults are false/off). This corpus is handwritten
+# manuscript — the figure pipeline is for published papers with plates.
+#
+# Output goes to a NEW directory, leaving the 2026-08 corpus OCR intact for
+# side-by-side comparison. Directory name is deliberately 8 chars shorter than
+# the old one: the longest path in the old tree was 234 chars against Windows'
+# 260 MAX_PATH (LongPathsEnabled is 0 on this machine).
+#
+# Usage:
+#   uv run python run.py --config config_glo_evang_test.yaml
+# ---------------------------------------------------------------------------
+
+pdf_input:  'C:\Users\jpaige\Box\4. Research\LLM_GLO_map_notes\Glo_map_field_notes_evangeline'
+output_dir: 'C:\Users\jpaige\Desktop\local_repositories\GLO_survey_notes_ocr\GLO_evang_ocr_2026_09_test'
+
+file_list: 'file_lists/glo_evang_test4.txt'
+
+chunk_size: 50
+skip_existing: true
+
+docling:
+  do_ocr: true
