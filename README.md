@@ -14,6 +14,13 @@ The searchable PDF (`<pdf_stem>_ocr.pdf`) is the original PDF with an invisible 
 
 The downstream tools each consume different output files. The `text_docling.txt` file feeds into [site_form_segmenter](https://github.com/jnpaige/site_form_segmenter) for page classification, and into site_coder, site_attribute_extractor, and site_vocab_extractor for LLM prompt text — the `.md` file works as a drop-in alternative input for the same tools wherever table reconstruction is worth the cost of a full OCR rerun to get it (see the GLO workflow below for a worked example of both a segmenter and an extractor consuming `.md` instead). The `.md` file also feeds into site_wiki for extraction and synthesis. The `_ocr.pdf` feeds into [text_coding_program](https://github.com/jnpaige/text_coding_program) for the PDF page viewer, into site_form_segmenter in vision mode for contact sheet rendering, and into this repo's own `locate_and_annotate.py` as the base layer for a visual-QA overlay of extracted mentions.
 
+**`paper_elements.json` (published papers).** `paper_elements.py` writes one more file per document. It lists every element downstream tools may address, each with an `id`, `kind`, `page`, text and `regions` in PDF points:
+- headings, paragraphs, captions and individual table rows, split from the `.md` the way site_form_segmenter always has;
+- figures, from `figures/figures.json`;
+- artefact crops (`piece`), from `figures/figure_pieces.json`.
+
+Each text block also lists the figure numbers it cites (`figure_refs`). Segmenters read this file instead of re-parsing the `.md`, so every tool addresses the same elements by the same ids. It needs no re-OCR: `uv run python paper_elements.py --input-dir "<corpus>"`. The shape is defined in `local_repositories\paper_units_eval\contracts.py`.
+
 Below I outline a few different downstream workflows that can feed off of the pdf_ocr foundation. 
 
 ---
