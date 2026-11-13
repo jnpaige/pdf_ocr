@@ -25,6 +25,9 @@ from docling.datamodel.pipeline_options import OcrOptions
 class SuryaOcrOptions(OcrOptions):
     kind: ClassVar[Literal["surya"]] = "surya"
     lang: list[str] = ["en"]  # OcrOptions requires lang; Surya ignores it (auto-detects)
+    # A fine-tuned recognition checkpoint (a folder from the surya_finetune repo); None = Surya's stock model.
+    # Detection is never swapped: only recognition is fine-tuned there.
+    recognition_checkpoint: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -224,8 +227,9 @@ class SuryaOcrModel(BaseOcrModel):
             from surya.foundation import FoundationPredictor
             from surya.recognition import RecognitionPredictor
 
-            print("  Loading Surya models...")
-            _foundation = FoundationPredictor()
+            ckpt = getattr(options, "recognition_checkpoint", None)
+            print(f"  Loading Surya models (recognition: {ckpt or 'stock'})...")
+            _foundation = FoundationPredictor(checkpoint=ckpt) if ckpt else FoundationPredictor()
             self._det = DetectionPredictor()
             self._rec = RecognitionPredictor(_foundation)
 
@@ -305,7 +309,8 @@ class SuryaPdfPipeline(StandardPdfPipeline):
         return SuryaOcrModel(
             enabled=self.pipeline_options.do_ocr,
             artifacts_path=art_path,
-            options=SuryaOcrOptions(),
+            options=(self.pipeline_options.ocr_options
+                     if isinstance(self.pipeline_options.ocr_options, SuryaOcrOptions) else SuryaOcrOptions()),
             accelerator_options=self.pipeline_options.accelerator_options,
         )
 
@@ -377,6 +382,10 @@ def build_converter(docling_cfg: dict | None = None):
 
     pipeline_options = PdfPipelineOptions()
     pipeline_options.do_ocr = do_ocr
+    ckpt = docling_cfg.get("recognition_checkpoint")
+    if ckpt and not Path(ckpt).is_dir():
+        raise FileNotFoundError(f"docling.recognition_checkpoint is not a folder: {ckpt}")
+    pipeline_options.ocr_options = SuryaOcrOptions(recognition_checkpoint=ckpt)
 
     # Left at its default (False). Docling gates every pipeline stage that
     # calls out of the process behind this one flag, so it stays off here and

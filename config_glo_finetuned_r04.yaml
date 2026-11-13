@@ -1,0 +1,26 @@
+# ---------------------------------------------------------------------------
+# config_glo_finetuned_r04.yaml — one GLO volume read with the fine-tuned Surya recognition model
+# ---------------------------------------------------------------------------
+# Purpose: read a whole field-note volume with surya_finetune's best checkpoint (r04_all: 774 lines from 97 training
+# volumes, labels by a person and by agents; test CER 0.123 vs 0.244 for stock Surya on person-checked lines) so the
+# output can be reviewed as a whole, beside the stock-model run of the same volume in ocr_knf.
+#
+# 507_00349 (E. R. Downing, vol. 29, 138 pages) is one of the ten volumes held out from training, so nothing in it was
+# seen, and its pages are upright (134 of 138 by the line-box test in surya_finetune's export_lines.py). The first run,
+# 507_00027, had 99 of 152 pages photographed sideways, which detection reads as vertical text; its output is kept in
+# the same output_dir. Only recognition changes; line detection, Docling layout and every output format are as in a
+# normal run.
+#
+# Usage:
+#   uv run python run.py --config config_glo_finetuned_r04.yaml
+# ---------------------------------------------------------------------------
+
+pdf_input:  'C:\Users\jpaige\Desktop\local_repositories\GLO_survey_notes_ocr\Glo_map_field_notes_knf\507_00349__FIELD_NOTES_S_W_D_E_R_DOWNING_VOL_29.pdf'
+output_dir: 'C:\Users\jpaige\Desktop\local_repositories\GLO_survey_notes_ocr\knf_ocr_r04_all'
+
+chunk_size: 25   # 50 ran out of commit memory (std::bad_alloc on pages) with another GPU job running; pages are read independently, so this does not change the text
+skip_existing: false
+
+docling:
+  do_ocr: true
+  recognition_checkpoint: 'C:\Users\jpaige\Desktop\local_repositories\surya_finetune_data\glo_knf\checkpoints\20261110_1912_r04_all'
