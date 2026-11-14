@@ -8,7 +8,7 @@
 #   glo_r05_monfrague.txt    38 volumes, 11,319 pages
 #
 # Each machine copies this file to config_glo_r05_<machine>.local.yaml (do not commit it) and fills in the three
-# paths below for that machine. The checkpoint comes from the private Hugging Face repo cfaswg/surya-glo-r05-all.
+# paths below for that machine. The checkpoint comes from the private Hugging Face repo cfaswg/surya_glo_r05.
 #
 # Output: one folder per volume with ocr_docling.json (now with `ocr_lines`, one item per Surya line, which
 # glo_field_notes' lines step reads), text_docling.txt, <stem>.md and <stem>_ocr.pdf.
