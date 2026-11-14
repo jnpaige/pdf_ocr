@@ -1,0 +1,31 @@
+# ---------------------------------------------------------------------------
+# config_glo_r05_corpus.yaml — every GLO field-notes volume (43 Evangeline + 111 KNF = 154) read with the
+# surya_finetune r05_all recognition checkpoint, split across machines by file list.
+# ---------------------------------------------------------------------------
+# The split is by pages, 3/4 Bombero and 1/4 Monfrague. The file lists travel with each machine's PDFs (file
+# lists are corpus data, so .gitignore keeps them out of this public repo):
+#   glo_r05_bombero.txt     116 volumes, 33,957 pages
+#   glo_r05_monfrague.txt    38 volumes, 11,319 pages
+#
+# Each machine copies this file to config_glo_r05_<machine>.local.yaml (do not commit it) and fills in the three
+# paths below for that machine. The checkpoint comes from the private Hugging Face repo cfaswg/surya-glo-r05-all.
+#
+# Output: one folder per volume with ocr_docling.json (now with `ocr_lines`, one item per Surya line, which
+# glo_field_notes' lines step reads), text_docling.txt, <stem>.md and <stem>_ocr.pdf.
+#
+# Resumable: finished volumes are skipped (skip_existing) and finished 25-page chunks of a half-done volume are
+# reused, so after a crash or reboot just run the same command again.
+#
+# Usage:
+#   uv run python run.py --config config_glo_r05_<machine>.local.yaml --file-list <package folder>\glo_r05_<machine>.txt
+# ---------------------------------------------------------------------------
+
+pdf_input:  'FILL_IN: folder holding this machine''s unzipped volume PDFs'
+output_dir: 'FILL_IN: folder for the OCR output, e.g. <data folder>\GLO_r05\ocr_r05'
+
+chunk_size: 25   # 50 ran out of commit memory (std::bad_alloc) on Cabanerso; pages are read independently
+skip_existing: true
+
+docling:
+  do_ocr: true
+  recognition_checkpoint: 'FILL_IN: folder the Hugging Face checkpoint was downloaded to (holds model.safetensors)'

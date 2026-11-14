@@ -1,0 +1,21 @@
+# ---------------------------------------------------------------------------
+# config_glo_finetuned_r05_gold.yaml — two gold-labelled Evangeline volumes read with surya_finetune r05_all
+# ---------------------------------------------------------------------------
+# Purpose: test whether the fine-tuned recognition model improves glo_field_notes' township/section segmentation,
+# scored against that project's gold labels. 507_00434 and 507_00632 are from its "fresh" gold split (never tuned on),
+# and no line of either volume was in r05_all's training set. Only recognition changes from the stock Evangeline run.
+#
+# Usage:
+#   uv run python run.py --config config_glo_finetuned_r05_gold.yaml
+# ---------------------------------------------------------------------------
+
+pdf_input:  'C:\Users\jpaige\Desktop\local_repositories\GLO_survey_notes_ocr\Glo_map_field_notes_evangeline'
+output_dir: 'C:\Users\jpaige\Desktop\local_repositories\GLO_survey_notes_ocr\evangeline_ocr_r05_all'
+file_list:  'file_lists/gold_fresh_2.txt'
+
+chunk_size: 25
+skip_existing: false
+
+docling:
+  do_ocr: true
+  recognition_checkpoint: 'C:\Users\jpaige\Desktop\local_repositories\surya_finetune_data\glo_knf\checkpoints\20261113_0841_r05_all'

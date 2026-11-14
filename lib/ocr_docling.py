@@ -1301,4 +1301,22 @@ def _build_page_results(doc, raw_cells: dict[int, list] | None = None) -> tuple[
             "full_text": assembled_text,
         })
 
+    # `ocr_lines`: every line Surya read on the page, one item per line, in
+    # reading order (page_reflow's), whatever docling's layout made of them.
+    # `text_lines` holds layout items (paragraphs, or reflowed paragraphs on a
+    # fallback page), so a consumer that needs the individual handwritten
+    # lines — glo_field_notes' line chain — cannot recover them from it: a
+    # paragraph's per-line boxes survive in `bboxes`, its per-line text does
+    # not. Additive; nothing that reads `text_lines` changes.
+    for r in results:
+        cells = raw_cells.get(r["page_index"] + 1) or []
+        line_dicts = [
+            {"text": c.text.strip(), "confidence": c.confidence, "bbox": bb}
+            for c, bb in (
+                (c, _bbox_to_dict(c.rect.to_bounding_box(), page_heights.get(r["page_index"])))
+                for c in cells if c.text and c.text.strip()
+            ) if bb
+        ]
+        r["ocr_lines"] = page_reflow.reflow(line_dicts)[2] if line_dicts else []
+
     return results, n_recovered, fallback_page_indices
