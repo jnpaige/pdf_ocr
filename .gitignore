@@ -141,3 +141,6 @@ desktop.ini
 !requirements.txt
 !config.yaml
 !config.example.yaml
+
+# per-machine copies of a config (paths for one machine)
+*.local.yaml
