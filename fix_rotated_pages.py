@@ -119,7 +119,12 @@ def check_direction(src_pdf: Path, page: int, upright_pdf: Path, rotate_cw: int)
     b = render(upright_pdf, 0, 0)
     if a.size != b.size:
         b = b.resize(a.size)
-    return float(np.abs(np.asarray(a, dtype=float) - np.asarray(b, dtype=float)).mean())
+    a, b = np.asarray(a, dtype=float), np.asarray(b, dtype=float)
+    # At 1/4 scale the two renders can land one pixel apart when a page side isn't a multiple of 4,
+    # so take the best match over shifts of up to one pixel (a wrong direction scores far higher).
+    h, w = a.shape
+    return float(min(np.abs(a[1 + dy:h - 1 + dy, 1 + dx:w - 1 + dx] - b[1:h - 1, 1:w - 1]).mean()
+                     for dy in (-1, 0, 1) for dx in (-1, 0, 1)))
 
 
 def write_volume_outputs(out_dir: Path, stem: str, results: list[dict]) -> None:
