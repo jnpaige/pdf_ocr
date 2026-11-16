@@ -108,8 +108,15 @@ def check_direction(src_pdf: Path, page: int, upright_pdf: Path, rotate_cw: int)
     import numpy as np
     import pypdfium2 as pdfium
 
-    a = pdfium.PdfDocument(str(src_pdf))[page].render(scale=0.25, rotation=rotate_cw).to_pil().convert("L")
-    b = pdfium.PdfDocument(str(upright_pdf))[0].render(scale=0.25).to_pil().convert("L")
+    def render(path, i, rot):
+        doc = pdfium.PdfDocument(str(path))
+        try:
+            return doc[i].render(scale=0.25, rotation=rot).to_pil().convert("L")
+        finally:
+            doc.close()  # release the file handle, or Windows can't delete the temp folder
+
+    a = render(src_pdf, page, rotate_cw)
+    b = render(upright_pdf, 0, 0)
     if a.size != b.size:
         b = b.resize(a.size)
     return float(np.abs(np.asarray(a, dtype=float) - np.asarray(b, dtype=float)).mean())
@@ -168,7 +175,7 @@ def fix_volume(pdf_path: Path, out_dir: Path, args, cfg: dict, converter, log: c
     docling_cfg = {k: v for k, v in cfg.get("docling", {}).items() if k != "markdown_dir"}
     by_index = {r["page_index"]: r for r in results}
     swaps: list[tuple[int, Path, int]] = []
-    with tempfile.TemporaryDirectory(prefix="rot_", dir=args.work_dir) as tmp:
+    with tempfile.TemporaryDirectory(prefix="rot_", dir=args.work_dir, ignore_cleanup_errors=True) as tmp:
         tmp = Path(tmp)
         for k in range(0, len(cands), args.chunk_size):
             part = cands[k:k + args.chunk_size]
