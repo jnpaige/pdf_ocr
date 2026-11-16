@@ -126,6 +126,30 @@ uv run python run.py
 uv run python run.py --config path/to/config.yaml
 ```
 
+### Fixing pages scanned sideways
+
+Some scanned volumes have pages whose image is turned 90° inside an ordinary portrait page, with no `/Rotate` flag.
+Surya then reads the text as many short vertical boxes and the page's OCR is close to useless. `fix_rotated_pages.py`
+repairs finished output without rerunning whole volumes:
+
+1. It finds candidate pages from each volume's own `ocr_docling.json`: pages where most `ocr_lines` boxes are taller
+   than wide.
+2. It reads them again turned upright (270° clockwise by default). The pages are built losslessly: the scan image is
+   reused, and the page carries no `/Rotate`.
+3. It keeps a new reading only when it is clearly better, and otherwise leaves the page as it was.
+4. It patches the page into all four outputs. A patched page in `ocr_docling.json` carries `"rotation_applied": 270`,
+   and its boxes are in the upright (landscape) frame.
+
+The original files are backed up first. Every candidate page is logged to a CSV with its old and new scores. Rerunning
+the tool skips pages it has already patched.
+
+```powershell
+uv run python fix_rotated_pages.py --config <config used for the run> --ocr-dir <output_dir> `
+    --pdf-dir <source PDFs> --backup-dir <backup folder> [--file-list volumes.txt] [--dry-run]
+```
+
+On large corpora, run one volume per process (e.g. a supervisor loop over `--file-list` files of one line each).
+
 ## Configuration
 
 `config.example.yaml` in the repo root is an annotated reference covering every setting, with the values used for the 2026-08 corpus runs (2024 site forms, Phase II reports, GLO survey field notes). Copy it to `config.yaml` and edit. Only `pdf_input` and `output_dir` are required.
