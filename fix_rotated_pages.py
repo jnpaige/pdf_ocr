@@ -202,7 +202,8 @@ def fix_volume(pdf_path: Path, out_dir: Path, args, cfg: dict, converter, log: c
             results = [by_index[i] for i in sorted(by_index)]
             patch_searchable_pdf(out_dir / f"{stem}_ocr.pdf", swaps)
             write_volume_outputs(out_dir, stem, results)
-    print(f"  Accepted {summary['accepted']} of {len(cands)}; volume outputs patched")
+    print(f"  Accepted {summary['accepted']} of {len(cands)}"
+          + ("; volume outputs patched" if summary["accepted"] else "; volume unchanged"))
     return summary
 
 
@@ -233,10 +234,17 @@ def main():
     else:
         stems = sorted(d.name for d in ocr_dir.iterdir() if (d / "ocr_docling.json").exists())
 
-    converter = None
-    if not args.dry_run:
-        from ocr_docling import build_converter
-        converter = build_converter(cfg.get("docling", {}))
+    class LazyConverter:  # load the OCR models only when a volume actually has candidates
+        def __init__(self):
+            self._c = None
+
+        def __getattr__(self, name):
+            if self._c is None:
+                from ocr_docling import build_converter
+                self._c = build_converter(cfg.get("docling", {}))
+            return getattr(self._c, name)
+
+    converter = None if args.dry_run else LazyConverter()
 
     log_path = Path(args.log) if args.log else ocr_dir / "rotation_fixes.csv"
     new_log = not log_path.exists()
