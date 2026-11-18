@@ -1,0 +1,21 @@
+# ---------------------------------------------------------------------------
+# config_glo_finetuned_r06.yaml — whole volumes read with surya_finetune's r06 checkpoint (r05's 1,113 Louisiana lines
+# plus 690 Florida Jupiter Inlet lines), for a side-by-side with the Muse-Glimmer-30B QLoRA reader on the same boxes.
+#
+# Volumes (both upright): 507_00349 (E. R. Downing, vol. 29, 138 pages; held out from every training set, the r05
+# whole-volume check volume) and Florida Vol 80 (Houston 1845, 22 pages; its 34 training lines came from other pages),
+# a PDF built from the 400 dpi bilevel TIFFs with each page sized so the 144 dpi render is the native scan.
+#
+# Usage:
+#   uv run python run.py --config config_glo_finetuned_r06.yaml
+# ---------------------------------------------------------------------------
+
+pdf_input:  'C:\Users\jpaige\Desktop\local_repositories\GLO_survey_notes_ocr\r06_whole_volume_input'
+output_dir: 'C:\Users\jpaige\Desktop\local_repositories\GLO_survey_notes_ocr\ocr_r06_la_fl'
+
+chunk_size: 25   # 50 ran out of commit memory (std::bad_alloc) on Cabanerso
+skip_existing: false
+
+docling:
+  do_ocr: true
+  recognition_checkpoint: 'C:\Users\jpaige\Desktop\local_repositories\surya_finetune_data\glo_r06\checkpoints\20261117_1238_r06_la_fl'
